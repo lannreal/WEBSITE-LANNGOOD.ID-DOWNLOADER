@@ -4,15 +4,15 @@
  * Compatible with Pterodactyl Panel
  */
 
-const express = require('express');
+const express  = require('express');
 const { exec, execSync, spawn } = require('child_process');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
-const crypto = require('crypto');
-const https = require('https');
+const path     = require('path');
+const fs       = require('fs');
+const os       = require('os');
+const crypto   = require('crypto');
+const https    = require('https');
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // ── TEMP DIR ──────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ app.get('/', (req, res) => {
 //  YT-DLP DETECTION & AUTO-SETUP
 // ══════════════════════════════════════════════════════════════════
 
-let YTDLP_BIN = null;
+let YTDLP_BIN     = null;
 let YTDLP_VERSION = null;
 
 function detectYtDlp() {
@@ -57,6 +57,9 @@ function detectYtDlp() {
     '/usr/local/bin/yt-dlp',
     '/usr/bin/yt-dlp',
     '/home/container/yt-dlp',
+    '/root/.local/bin/yt-dlp',        // pip install --user
+    '/nix/var/nix/profiles/default/bin/yt-dlp',  // Railway Nix
+    '/usr/local/lib/python3.11/dist-packages/yt_dlp/__main__.py',
     'yt-dlp',
   ];
 
@@ -68,7 +71,7 @@ function detectYtDlp() {
         console.log(`  ✅ yt-dlp: ${bin} (v${v})`);
         return true;
       }
-    } catch { }
+    } catch {}
   }
 
   // Try via python3
@@ -79,14 +82,14 @@ function detectYtDlp() {
       console.log(`  ✅ yt-dlp via python3: v${v}`);
       return true;
     }
-  } catch { }
+  } catch {}
 
   // Try via pip
   try {
     execSync('pip install yt-dlp -q', { timeout: 60000 });
     const v = execSync('yt-dlp --version 2>&1', { timeout: 5000 }).toString().trim();
     if (v) { YTDLP_BIN = 'yt-dlp'; YTDLP_VERSION = v; return true; }
-  } catch { }
+  } catch {}
 
   console.warn('  ⚠  yt-dlp TIDAK ditemukan!');
   return false;
@@ -125,19 +128,20 @@ function autoInstallYtDlp(cb) {
 // ── FFMPEG DETECTION ─────────────────────────────────────────────
 
 let FFMPEG_AVAILABLE = false;
-let FFMPEG_PATH = 'ffmpeg';
-let FFMPEG_DIR = '';  // folder ffmpeg untuk --ffmpeg-location
+let FFMPEG_PATH      = 'ffmpeg';
+let FFMPEG_DIR       = '';  // folder ffmpeg untuk --ffmpeg-location
 
 function detectFfmpeg() {
   // Cek kandidat — prioritaskan yang ada di folder project (Windows-friendly)
   const candidates = [
-    path.join(__dirname, 'ffmpeg.exe'),      // Windows: di folder project
-    path.join(__dirname, 'ffmpeg'),           // Linux: di folder project
+    path.join(__dirname, 'ffmpeg.exe'),
+    path.join(__dirname, 'ffmpeg'),
     path.join(__dirname, 'bin', 'ffmpeg.exe'),
     path.join(__dirname, 'bin', 'ffmpeg'),
     '/usr/local/bin/ffmpeg',
     '/usr/bin/ffmpeg',
-    'ffmpeg',                                  // dari PATH (terakhir)
+    '/nix/var/nix/profiles/default/bin/ffmpeg',  // Railway Nix
+    'ffmpeg',
   ];
 
   for (const bin of candidates) {
@@ -145,13 +149,13 @@ function detectFfmpeg() {
       const vOut = execSync(`"${bin}" -version 2>&1`, { timeout: 5000 }).toString();
       if (!vOut.includes('ffmpeg version')) continue;
       FFMPEG_AVAILABLE = true;
-      FFMPEG_PATH = bin;
+      FFMPEG_PATH      = bin;
       // --ffmpeg-location = FOLDER tempat ffmpeg.exe berada (bukan path file-nya!)
-      FFMPEG_DIR = path.dirname(path.resolve(bin));
+      FFMPEG_DIR       = path.dirname(path.resolve(bin));
       console.log(`  ✅ ffmpeg: ${path.resolve(bin)}`);
       console.log(`  📁 ffmpeg dir: ${FFMPEG_DIR}`);
       return true;
-    } catch { }
+    } catch {}
   }
 
   // Coba via PATH tanpa path absolut
@@ -159,12 +163,12 @@ function detectFfmpeg() {
     const vOut = execSync('ffmpeg -version 2>&1', { timeout: 5000 }).toString();
     if (vOut.includes('ffmpeg version')) {
       FFMPEG_AVAILABLE = true;
-      FFMPEG_PATH = 'ffmpeg';
-      FFMPEG_DIR = '';   // biarkan yt-dlp temukan sendiri via PATH
+      FFMPEG_PATH      = 'ffmpeg';
+      FFMPEG_DIR       = '';   // biarkan yt-dlp temukan sendiri via PATH
       console.log('  ✅ ffmpeg ditemukan di PATH');
       return true;
     }
-  } catch { }
+  } catch {}
 
   console.warn('  ⚠  ffmpeg tidak ditemukan!');
   console.warn(`     Taruh ffmpeg.exe di: ${__dirname}`);
@@ -205,7 +209,7 @@ function cleanupOld() {
       const fp = path.join(TEMP_DIR, f);
       if (now - fs.statSync(fp).mtimeMs > 20 * 60 * 1000) fs.unlinkSync(fp);
     });
-  } catch { }
+  } catch {}
 }
 setInterval(cleanupOld, 10 * 60 * 1000);
 
@@ -243,7 +247,7 @@ app.post('/api/info', requireYtDlp, (req, res) => {
   try { new URL(url); } catch { return res.status(400).json({ error: 'Format URL salah' }); }
 
   const safeUrl = url.replace(/["`]/g, '');
-  const cmd = `"${YTDLP_BIN}" --no-warnings --dump-json --no-playlist "${safeUrl}"`;
+  const cmd     = `"${YTDLP_BIN}" --no-warnings --dump-json --no-playlist "${safeUrl}"`;
 
   exec(cmd, { timeout: 35000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) {
@@ -273,10 +277,10 @@ app.post('/api/download', requireYtDlp, (req, res) => {
 
   cleanupOld();
 
-  const uid = crypto.randomBytes(8).toString('hex');
-  const outTpl = path.join(TEMP_DIR, `${uid}_%(title).60s.%(ext)s`);
+  const uid     = crypto.randomBytes(8).toString('hex');
+  const outTpl  = path.join(TEMP_DIR, `${uid}_%(title).60s.%(ext)s`);
   const safeUrl = url.replace(/["`]/g, '');
-  const fmtStr = buildFormatStr(format, quality);
+  const fmtStr  = buildFormatStr(format, quality);
 
   // Build args berbeda untuk MP3 vs video
   let args;
@@ -322,10 +326,10 @@ app.post('/api/download', requireYtDlp, (req, res) => {
 
   let spawnCmd, spawnArgs;
   if (YTDLP_BIN.startsWith('python3')) {
-    spawnCmd = 'python3';
+    spawnCmd  = 'python3';
     spawnArgs = ['-m', 'yt_dlp', ...args];
   } else {
-    spawnCmd = YTDLP_BIN;
+    spawnCmd  = YTDLP_BIN;
     spawnArgs = args;
   }
 
@@ -334,7 +338,7 @@ app.post('/api/download', requireYtDlp, (req, res) => {
   const proc = spawn(spawnCmd, spawnArgs);
   let stderr = '';
   proc.stderr.on('data', d => { stderr += d.toString(); });
-  proc.stdout.on('data', () => { });
+  proc.stdout.on('data', () => {});
 
   proc.on('error', err => {
     console.error('[SPAWN ERR]', err.message);
@@ -347,10 +351,10 @@ app.post('/api/download', requireYtDlp, (req, res) => {
         const msg = stderr.toLowerCase();
         let errText = 'Download gagal';
         if (msg.includes('unsupported url')) errText = 'URL tidak didukung';
-        else if (msg.includes('private')) errText = 'Video bersifat privat';
-        else if (msg.includes('geo')) errText = 'Video dibatasi wilayah';
-        else if (msg.includes('404')) errText = 'Video tidak ditemukan';
-        else if (msg.includes('ffmpeg')) errText = 'ffmpeg tidak ditemukan di server — install ffmpeg dulu';
+        else if (msg.includes('private'))    errText = 'Video bersifat privat';
+        else if (msg.includes('geo'))        errText = 'Video dibatasi wilayah';
+        else if (msg.includes('404'))        errText = 'Video tidak ditemukan';
+        else if (msg.includes('ffmpeg'))     errText = 'ffmpeg tidak ditemukan di server — install ffmpeg dulu';
         else if (msg.includes('postprocessor')) errText = 'Konversi audio gagal — ffmpeg diperlukan';
         console.error('[STDERR]', stderr.slice(0, 400));
         return res.status(500).json({ error: errText, detail: stderr.slice(0, 300) });
@@ -370,7 +374,7 @@ app.post('/api/download', requireYtDlp, (req, res) => {
     if (!ext) ext = format === 'mp3' ? 'mp3' : 'mp4';
 
     // Untuk MP3 request: paksa nama file berakhiran .mp3
-    const rawName = files[0].replace(`${uid}_`, '');
+    const rawName  = files[0].replace(`${uid}_`, '');
     const baseName = rawName.replace(/\.[^.]+$/, '');   // hapus extension lama
     // Tentukan extension final
     let finalExt;
@@ -400,7 +404,7 @@ app.post('/api/download', requireYtDlp, (req, res) => {
 
     const stream = fs.createReadStream(filePath);
     stream.pipe(res);
-    const cleanup = () => { try { fs.unlinkSync(filePath); } catch { } };
+    const cleanup = () => { try { fs.unlinkSync(filePath); } catch {} };
     stream.on('end', () => setTimeout(cleanup, 3000));
     res.on('close', cleanup);
   });
