@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Binary files (jangan upload ke GitHub)
+ffmpeg
+ffmpeg.exe
+ffprobe
+ffprobe.exe
+yt-dlp
+yt-dlp.exe
+
+# Downloaded video/audio temp files
+*.mp4
+*.mp3
+*.webm
+*.mkv
+*.m4a
+*.opus
+*.aac
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# Lock files (opsional, boleh di-include)
+# package-lock.json

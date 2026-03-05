@@ -1,0 +1,1757 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LANNGOOD.ID — Social Media Downloader</title>
+  <meta name="description"
+    content="Download video dari TikTok, Instagram, Facebook, YouTube & banyak lagi. Gratis, cepat, dan mudah." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800;900&family=JetBrains+Mono:wght@300;400;500&display=swap"
+    rel="stylesheet" />
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #04040a;
+      --bg1: #080812;
+      --bg2: #0c0c1a;
+      --surface: rgba(255, 255, 255, 0.04);
+      --border: rgba(255, 255, 255, 0.07);
+      --border-h: rgba(0, 210, 255, 0.35);
+      --cyan: #00d2ff;
+      --cyan2: #00aadd;
+      --purple: #6c2fff;
+      --pink: #ff2d78;
+      --text: #dde6f0;
+      --muted: #5a6a7e;
+      --radius: 14px;
+      --glow: 0 0 40px rgba(0, 210, 255, 0.18);
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Syne', sans-serif;
+      overflow-x: hidden;
+      min-height: 100vh;
+    }
+
+    /* ── CANVAS BG ── */
+    #bg-canvas {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* ── NOISE OVERLAY ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+      opacity: 0.4;
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    /* ── WRAPPER ── */
+    .wrapper {
+      position: relative;
+      z-index: 2;
+    }
+
+    /* ── NAV ── */
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 5%;
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(20px);
+      background: rgba(4, 4, 10, 0.7);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .logo {
+      font-size: 1.35rem;
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      background: linear-gradient(90deg, var(--cyan), var(--purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-decoration: none;
+    }
+
+    .logo span {
+      background: none;
+      -webkit-text-fill-color: rgba(255, 255, 255, 0.35);
+      font-weight: 400;
+      font-size: 0.75rem;
+      font-family: 'JetBrains Mono', monospace;
+      margin-left: 6px;
+      letter-spacing: 0.05em;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 28px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+      color: var(--cyan);
+    }
+
+    .nav-badge {
+      background: linear-gradient(135deg, var(--cyan), var(--purple));
+      color: #000;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 5px 14px;
+      border-radius: 999px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    /* ── HERO ── */
+    .hero {
+      min-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 80px 5% 60px;
+      position: relative;
+    }
+
+    .hero-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      background: rgba(0, 210, 255, 0.08);
+      border: 1px solid rgba(0, 210, 255, 0.2);
+      padding: 6px 16px;
+      border-radius: 999px;
+      margin-bottom: 28px;
+      animation: fadeUp 0.6s ease both;
+    }
+
+    .hero-eyebrow::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 8px var(--cyan);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+
+      50% {
+        opacity: 0.4;
+        transform: scale(0.8);
+      }
+    }
+
+    .hero-title {
+      font-size: clamp(2.8rem, 7vw, 6.5rem);
+      font-weight: 900;
+      line-height: 1.0;
+      letter-spacing: -0.03em;
+      margin-bottom: 20px;
+      animation: fadeUp 0.6s 0.1s ease both;
+    }
+
+    .hero-title .line1 {
+      color: #fff;
+      display: block;
+    }
+
+    .hero-title .line2 {
+      display: block;
+      background: linear-gradient(90deg, var(--cyan) 0%, var(--purple) 60%, var(--pink) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      background-size: 200%;
+      animation: shimmer 4s linear infinite, fadeUp 0.6s 0.15s ease both;
+    }
+
+    @keyframes shimmer {
+      0% {
+        background-position: 0% 50%;
+      }
+
+      100% {
+        background-position: 200% 50%;
+      }
+    }
+
+    .hero-sub {
+      color: var(--muted);
+      font-size: 1.05rem;
+      max-width: 520px;
+      line-height: 1.7;
+      margin-bottom: 48px;
+      font-weight: 400;
+      animation: fadeUp 0.6s 0.2s ease both;
+    }
+
+    /* ── DOWNLOAD BOX ── */
+    .dl-box {
+      width: 100%;
+      max-width: 720px;
+      animation: fadeUp 0.7s 0.3s ease both;
+    }
+
+    .dl-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 28px;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      transition: border-color 0.3s;
+    }
+
+    .dl-card:focus-within {
+      border-color: var(--border-h);
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5), var(--glow), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .url-input {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: #fff;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.88rem;
+      padding: 14px 18px;
+      outline: none;
+      transition: border-color 0.25s, background 0.25s;
+    }
+
+    .url-input::placeholder {
+      color: var(--muted);
+    }
+
+    .url-input:focus {
+      border-color: var(--border-h);
+      background: rgba(0, 210, 255, 0.04);
+    }
+
+    .btn-paste {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--muted);
+      cursor: pointer;
+      font-family: 'Syne', sans-serif;
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 14px 18px;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+
+    .btn-paste:hover {
+      border-color: var(--border-h);
+      color: var(--cyan);
+    }
+
+    .format-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+
+    .fmt-chip {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      cursor: pointer;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      padding: 6px 14px;
+      transition: all 0.2s;
+      text-transform: uppercase;
+    }
+
+    .fmt-chip.active,
+    .fmt-chip:hover {
+      background: rgba(0, 210, 255, 0.1);
+      border-color: rgba(0, 210, 255, 0.4);
+      color: var(--cyan);
+    }
+
+    .quality-select {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      padding: 6px 14px;
+      outline: none;
+      cursor: pointer;
+      margin-left: auto;
+    }
+
+    .quality-select option {
+      background: #0c0c1a;
+    }
+
+    .btn-download {
+      width: 100%;
+      background: linear-gradient(135deg, var(--cyan) 0%, var(--purple) 100%);
+      border: none;
+      border-radius: 12px;
+      color: #fff;
+      cursor: pointer;
+      font-family: 'Syne', sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      padding: 16px;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.2s, box-shadow 0.2s;
+      text-transform: uppercase;
+    }
+
+    .btn-download::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -60%;
+      width: 40%;
+      height: 200%;
+      background: rgba(255, 255, 255, 0.15);
+      transform: skewX(-20deg);
+      transition: left 0.5s;
+    }
+
+    .btn-download:hover::before {
+      left: 120%;
+    }
+
+    .btn-download:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 40px rgba(0, 210, 255, 0.3);
+    }
+
+    .btn-download:active {
+      transform: translateY(0);
+    }
+
+    .btn-download:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-download .btn-inner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    /* ── SPINNER ── */
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: none;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* ── STATUS MSG ── */
+    .status-msg {
+      margin-top: 14px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      border-radius: 10px;
+      padding: 12px 16px;
+      display: none;
+    }
+
+    .status-msg.info {
+      background: rgba(0, 210, 255, 0.08);
+      border: 1px solid rgba(0, 210, 255, 0.2);
+      color: var(--cyan);
+    }
+
+    .status-msg.error {
+      background: rgba(255, 45, 120, 0.08);
+      border: 1px solid rgba(255, 45, 120, 0.25);
+      color: var(--pink);
+    }
+
+    .status-msg.success {
+      background: rgba(0, 255, 128, 0.07);
+      border: 1px solid rgba(0, 255, 128, 0.2);
+      color: #00ff80;
+    }
+
+    /* ── RESULT PANEL ── */
+    #result-panel {
+      margin-top: 16px;
+      display: none;
+    }
+
+    .result-card {
+      background: rgba(0, 255, 128, 0.04);
+      border: 1px solid rgba(0, 255, 128, 0.18);
+      border-radius: 12px;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .result-thumb {
+      width: 72px;
+      height: 50px;
+      object-fit: cover;
+      border-radius: 8px;
+      flex-shrink: 0;
+    }
+
+    .result-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .result-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #fff;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-bottom: 4px;
+    }
+
+    .result-meta {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+
+    .btn-dl-link {
+      background: linear-gradient(135deg, #00ff80, #00d2ff);
+      border: none;
+      border-radius: 8px;
+      color: #000;
+      cursor: pointer;
+      font-family: 'Syne', sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+      padding: 10px 20px;
+      text-decoration: none;
+      display: inline-block;
+      transition: transform 0.15s, box-shadow 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn-dl-link:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 24px rgba(0, 255, 128, 0.35);
+    }
+
+    /* ── STATS ── */
+    .stats-row {
+      display: flex;
+      justify-content: center;
+      gap: 40px;
+      margin: 48px 0 0;
+      animation: fadeUp 0.7s 0.4s ease both;
+      flex-wrap: wrap;
+    }
+
+    .stat-item {
+      text-align: center;
+    }
+
+    .stat-num {
+      font-size: 2rem;
+      font-weight: 900;
+      background: linear-gradient(90deg, var(--cyan), var(--purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      display: block;
+    }
+
+    .stat-label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    /* ── PLATFORMS SECTION ── */
+    .section {
+      padding: 90px 5%;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .section-header {
+      text-align: center;
+      margin-bottom: 56px;
+    }
+
+    .section-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--purple);
+      margin-bottom: 12px;
+      display: block;
+    }
+
+    .section-title {
+      font-size: clamp(1.8rem, 3.5vw, 3rem);
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      color: #fff;
+    }
+
+    .section-title span {
+      background: linear-gradient(90deg, var(--cyan), var(--purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* ── PLATFORM GRID ── */
+    .platform-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 16px;
+    }
+
+    .platform-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .platform-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      transition: opacity 0.3s;
+      background: var(--card-glow, radial-gradient(circle at 50% 0%, rgba(0, 210, 255, 0.12), transparent 70%));
+    }
+
+    .platform-card:hover {
+      border-color: var(--card-color, var(--border-h));
+      transform: translateY(-4px);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+    }
+
+    .platform-card:hover::before {
+      opacity: 1;
+    }
+
+    .platform-icon {
+      font-size: 2.2rem;
+      margin-bottom: 10px;
+      display: block;
+      transition: transform 0.3s;
+    }
+
+    .platform-card:hover .platform-icon {
+      transform: scale(1.15);
+    }
+
+    .platform-name {
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: 0.02em;
+    }
+
+    .platform-ext {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    /* ── HOW IT WORKS ── */
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 24px;
+    }
+
+    .step-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 30px 24px;
+      position: relative;
+      transition: border-color 0.3s, transform 0.3s;
+    }
+
+    .step-card:hover {
+      border-color: var(--border-h);
+      transform: translateY(-3px);
+    }
+
+    .step-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      font-weight: 500;
+      color: var(--cyan);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+      display: block;
+    }
+
+    .step-icon {
+      font-size: 1.8rem;
+      margin-bottom: 14px;
+      display: block;
+    }
+
+    .step-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+
+    .step-desc {
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    .step-line {
+      position: absolute;
+      top: 38px;
+      right: -13px;
+      width: 26px;
+      height: 1px;
+      background: linear-gradient(90deg, var(--border-h), transparent);
+      z-index: 1;
+    }
+
+    /* ── FEATURES ── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+
+    .feature-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      transition: all 0.3s;
+    }
+
+    .feature-card:hover {
+      border-color: var(--border-h);
+      background: rgba(0, 210, 255, 0.04);
+    }
+
+    .feature-icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.3rem;
+      margin-bottom: 16px;
+      background: rgba(0, 210, 255, 0.1);
+      border: 1px solid rgba(0, 210, 255, 0.2);
+    }
+
+    .feature-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+
+    .feature-desc {
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 40px 5%;
+      text-align: center;
+    }
+
+    .footer-logo {
+      font-size: 1.4rem;
+      font-weight: 900;
+      background: linear-gradient(90deg, var(--cyan), var(--purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 12px;
+      display: block;
+    }
+
+    .footer-text {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.7;
+      max-width: 420px;
+      margin: 0 auto 20px;
+    }
+
+    .footer-note {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      color: rgba(255, 255, 255, 0.15);
+      letter-spacing: 0.06em;
+    }
+
+    /* ── DIVIDER ── */
+    .section-divider {
+      width: 100%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--border), transparent);
+      margin: 0 auto;
+    }
+
+    /* ── MODAL ── */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-overlay.show {
+      display: flex;
+    }
+
+    .modal-box {
+      background: var(--bg2);
+      border: 1px solid var(--border-h);
+      border-radius: 20px;
+      padding: 36px;
+      max-width: 440px;
+      width: 90%;
+      text-align: center;
+      box-shadow: 0 40px 100px rgba(0, 0, 0, 0.8), var(--glow);
+      animation: modalIn 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+    }
+
+    @keyframes modalIn {
+      from {
+        opacity: 0;
+        transform: scale(0.9) translateY(20px);
+      }
+
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    .modal-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+
+    .modal-sub {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 28px;
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--cyan), var(--purple));
+      width: 0%;
+      transition: width 0.4s ease;
+      position: relative;
+    }
+
+    .progress-fill::after {
+      content: '';
+      position: absolute;
+      right: 0;
+      top: 0;
+      width: 30px;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.5);
+      animation: shimmerBar 1s linear infinite;
+    }
+
+    @keyframes shimmerBar {
+      from {
+        opacity: 0.8;
+      }
+
+      to {
+        opacity: 0;
+      }
+    }
+
+    .progress-text {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--cyan);
+    }
+
+    /* ── ANIMATIONS ── */
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: none;
+    }
+
+    /* ── SCROLLBAR ── */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--bg);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-h);
+      border-radius: 3px;
+    }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 640px) {
+      .nav-links {
+        display: none;
+      }
+
+      .nav-badge {
+        display: none;
+      }
+
+      .input-row {
+        flex-direction: column;
+      }
+
+      .format-row {
+        gap: 6px;
+      }
+
+      .steps-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .step-line {
+        display: none;
+      }
+
+      .stats-row {
+        gap: 24px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="bg-canvas"></canvas>
+
+  <div class="wrapper">
+    <!-- NAV -->
+    <nav>
+      <a href="#" class="logo">LANNGOOD<span>.ID — v2</span></a>
+      <ul class="nav-links">
+        <li><a href="#platforms">Platform</a></li>
+        <li><a href="#how">Cara Pakai</a></li>
+        <li><a href="#features">Fitur</a></li>
+      </ul>
+      <span class="nav-badge">100% Gratis</span>
+    </nav>
+
+    <!-- HERO -->
+    <section class="hero">
+      <div class="hero-eyebrow">Downloader Terbaik Indonesia</div>
+
+      <h1 class="hero-title">
+        <span class="line1">Download Video</span>
+        <span class="line2">Semua Platform</span>
+      </h1>
+
+      <p class="hero-sub">
+        TikTok, Instagram, Facebook, YouTube, Twitter/X, dan 1000+ situs lainnya.
+        Tanpa watermark, gratis selamanya.
+      </p>
+
+      <!-- DOWNLOAD BOX -->
+      <div class="dl-box">
+        <div class="dl-card">
+          <div class="input-row">
+            <input type="url" class="url-input" id="urlInput" placeholder="https://www.tiktok.com/@user/video/..."
+              autocomplete="off" spellcheck="false" />
+            <button class="btn-paste" id="btnPaste">📋 Paste</button>
+          </div>
+
+          <div class="format-row">
+            <button class="fmt-chip active" data-fmt="mp4">MP4</button>
+            <button class="fmt-chip" data-fmt="mp3">MP3</button>
+            <button class="fmt-chip" data-fmt="webm">WEBM</button>
+            <button class="fmt-chip" data-fmt="best">Best</button>
+            <select class="quality-select" id="qualitySelect">
+              <option value="best">Kualitas Terbaik</option>
+              <option value="1080">1080p</option>
+              <option value="720">720p</option>
+              <option value="480">480p</option>
+              <option value="360">360p</option>
+            </select>
+          </div>
+
+          <button class="btn-download" id="btnDownload">
+            <span class="btn-inner">
+              <span class="spinner" id="spinner"></span>
+              <span id="btnText">⬇ Download Sekarang</span>
+            </span>
+          </button>
+
+          <div class="status-msg" id="statusMsg"></div>
+          <div id="result-panel"></div>
+        </div>
+      </div>
+
+      <!-- STATS -->
+      <div class="stats-row">
+        <div class="stat-item">
+          <span class="stat-num">1000+</span>
+          <span class="stat-label">Platform</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-num">4K</span>
+          <span class="stat-label">Max Kualitas</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-num">Free</span>
+          <span class="stat-label">Selamanya</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-num">0</span>
+          <span class="stat-label">Watermark</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-divider"></div>
+
+    <!-- PLATFORMS -->
+    <section class="section" id="platforms">
+      <div class="section-header reveal">
+        <span class="section-tag">// Didukung</span>
+        <h2 class="section-title">Platform yang <span>Kami Dukung</span></h2>
+      </div>
+
+      <div class="platform-grid">
+        <div class="platform-card reveal"
+          style="--card-color: rgba(0,0,0,0.5); --card-glow: radial-gradient(circle at 50% 0%, rgba(255,255,255,0.08), transparent 70%)">
+          <span class="platform-icon">🎵</span>
+          <div class="platform-name">TikTok</div>
+          <div class="platform-ext">MP4 · No Watermark</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(193,53,132,0.4); --card-glow: radial-gradient(circle at 50% 0%, rgba(193,53,132,0.12), transparent 70%)">
+          <span class="platform-icon">📸</span>
+          <div class="platform-name">Instagram</div>
+          <div class="platform-ext">Reels · Stories · Post</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(24,119,242,0.4); --card-glow: radial-gradient(circle at 50% 0%, rgba(24,119,242,0.12), transparent 70%)">
+          <span class="platform-icon">📘</span>
+          <div class="platform-name">Facebook</div>
+          <div class="platform-ext">MP4 · HD</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(255,0,0,0.4); --card-glow: radial-gradient(circle at 50% 0%, rgba(255,0,0,0.12), transparent 70%)">
+          <span class="platform-icon">▶️</span>
+          <div class="platform-name">YouTube</div>
+          <div class="platform-ext">MP4 · MP3 · 4K</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(29,161,242,0.4); --card-glow: radial-gradient(circle at 50% 0%, rgba(29,161,242,0.12), transparent 70%)">
+          <span class="platform-icon">🐦</span>
+          <div class="platform-name">Twitter / X</div>
+          <div class="platform-ext">MP4 · GIF</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(255,0,90,0.4); --card-glow: radial-gradient(circle at 50% 0%, rgba(255,0,90,0.12), transparent 70%)">
+          <span class="platform-icon">📌</span>
+          <div class="platform-name">Pinterest</div>
+          <div class="platform-ext">MP4 · Image</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(255,69,0,0.4); --card-glow: radial-gradient(circle at 50% 0%, rgba(255,69,0,0.12), transparent 70%)">
+          <span class="platform-icon">🎮</span>
+          <div class="platform-name">Reddit</div>
+          <div class="platform-ext">MP4 · GIF</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(0,210,255,0.4); --card-glow: radial-gradient(circle at 50% 0%, rgba(0,210,255,0.12), transparent 70%)">
+          <span class="platform-icon">🎬</span>
+          <div class="platform-name">Dailymotion</div>
+          <div class="platform-ext">MP4 · HD</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(108,47,255,0.4); --card-glow: radial-gradient(circle at 50% 0%, rgba(108,47,255,0.12), transparent 70%)">
+          <span class="platform-icon">🎥</span>
+          <div class="platform-name">Vimeo</div>
+          <div class="platform-ext">MP4 · 4K</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(240,85,50,0.4); --card-glow: radial-gradient(circle at 50% 0%, rgba(240,85,50,0.12), transparent 70%)">
+          <span class="platform-icon">📺</span>
+          <div class="platform-name">Twitch</div>
+          <div class="platform-ext">Clips · VOD</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(29,120,255,0.4); --card-glow: radial-gradient(circle at 50% 0%, rgba(29,120,255,0.12), transparent 70%)">
+          <span class="platform-icon">💼</span>
+          <div class="platform-name">LinkedIn</div>
+          <div class="platform-ext">MP4</div>
+        </div>
+        <div class="platform-card reveal"
+          style="--card-color: rgba(0,210,255,0.3); --card-glow: radial-gradient(circle at 50% 0%, rgba(0,210,255,0.1), transparent 70%)">
+          <span class="platform-icon">🌐</span>
+          <div class="platform-name">+1000 Lagi</div>
+          <div class="platform-ext">Semua didukung</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-divider"></div>
+
+    <!-- HOW IT WORKS -->
+    <section class="section" id="how">
+      <div class="section-header reveal">
+        <span class="section-tag">// Panduan</span>
+        <h2 class="section-title">Cara <span>Menggunakan</span></h2>
+      </div>
+
+      <div class="steps-grid">
+        <div class="step-card reveal">
+          <span class="step-num">Step — 01</span>
+          <span class="step-icon">🔗</span>
+          <div class="step-title">Salin URL Video</div>
+          <p class="step-desc">Buka video yang ingin kamu download, salin URL dari browser atau klik tombol Share.</p>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-card reveal">
+          <span class="step-num">Step — 02</span>
+          <span class="step-icon">📋</span>
+          <div class="step-title">Paste & Pilih Format</div>
+          <p class="step-desc">Tempelkan URL ke kolom input, pilih format dan kualitas yang kamu inginkan.</p>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-card reveal">
+          <span class="step-num">Step — 03</span>
+          <span class="step-icon">⬇️</span>
+          <div class="step-title">Download!</div>
+          <p class="step-desc">Klik tombol Download dan tunggu sebentar. File siap diunduh ke perangkatmu!</p>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-divider"></div>
+
+    <!-- FEATURES -->
+    <section class="section" id="features">
+      <div class="section-header reveal">
+        <span class="section-tag">// Keunggulan</span>
+        <h2 class="section-title">Kenapa <span>LANNGOOD.ID?</span></h2>
+      </div>
+
+      <div class="features-grid">
+        <div class="feature-card reveal">
+          <div class="feature-icon">🚀</div>
+          <div class="feature-title">Super Cepat</div>
+          <p class="feature-desc">Proses download menggunakan yt-dlp engine yang dioptimalkan untuk kecepatan maksimum.
+          </p>
+        </div>
+        <div class="feature-card reveal">
+          <div class="feature-icon">🎯</div>
+          <div class="feature-title">Tanpa Watermark</div>
+          <p class="feature-desc">Download video TikTok dan platform lainnya tanpa watermark sama sekali. Bersih &
+            jernih.</p>
+        </div>
+        <div class="feature-card reveal">
+          <div class="feature-icon">🔒</div>
+          <div class="feature-title">Aman & Privat</div>
+          <p class="feature-desc">Tidak ada data yang disimpan. File otomatis dihapus setelah kamu mengunduhnya.</p>
+        </div>
+        <div class="feature-card reveal">
+          <div class="feature-icon">💎</div>
+          <div class="feature-title">Kualitas 4K</div>
+          <p class="feature-desc">Mendukung resolusi hingga 4K untuk platform yang menyediakannya seperti YouTube dan
+            Vimeo.</p>
+        </div>
+        <div class="feature-card reveal">
+          <div class="feature-icon">🎵</div>
+          <div class="feature-title">Ekstrak Audio</div>
+          <p class="feature-desc">Unduh hanya audio dalam format MP3 berkualitas tinggi dari video manapun.</p>
+        </div>
+        <div class="feature-card reveal">
+          <div class="feature-icon">💸</div>
+          <div class="feature-title">100% Gratis</div>
+          <p class="feature-desc">Tidak ada biaya tersembunyi, tidak perlu daftar akun, tidak ada batas download.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer>
+      <span class="footer-logo">LANNGOOD.ID</span>
+      <p class="footer-text">
+        Downloader video sosial media terbaik untuk semua platform.<br />
+        Gratis, cepat, dan tanpa watermark.
+      </p>
+      <p class="footer-note">© 2025 LANNGOOD.ID · Powered by yt-dlp · For personal use only</p>
+    </footer>
+  </div>
+
+  <!-- MODAL -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal-box">
+      <div class="modal-title" id="modalTitle">Memproses Video...</div>
+      <p class="modal-sub" id="modalSub">Harap tunggu, sedang mengambil informasi video</p>
+      <div class="progress-bar">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+      <div class="progress-text" id="progressText">0%</div>
+    </div>
+  </div>
+
+  <script>
+    // ── CANVAS PARTICLE BG ──────────────────────────────────────
+    (function () {
+      const canvas = document.getElementById('bg-canvas');
+      const ctx = canvas.getContext('2d');
+      let W, H, particles = [], lines = [];
+
+      function resize() {
+        W = canvas.width = window.innerWidth;
+        H = canvas.height = window.innerHeight;
+      }
+
+      class Particle {
+        constructor() { this.reset(); }
+        reset() {
+          this.x = Math.random() * W;
+          this.y = Math.random() * H;
+          this.vx = (Math.random() - 0.5) * 0.3;
+          this.vy = (Math.random() - 0.5) * 0.3;
+          this.r = Math.random() * 1.5 + 0.3;
+          this.alpha = Math.random() * 0.4 + 0.1;
+          this.color = Math.random() > 0.6 ? '#00d2ff' : '#6c2fff';
+        }
+        update() {
+          this.x += this.vx;
+          this.y += this.vy;
+          if (this.x < 0 || this.x > W || this.y < 0 || this.y > H) this.reset();
+        }
+        draw() {
+          ctx.beginPath();
+          ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+          ctx.fillStyle = this.color;
+          ctx.globalAlpha = this.alpha;
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      function initParticles() {
+        particles = [];
+        const count = Math.floor((W * H) / 14000);
+        for (let i = 0; i < count; i++) particles.push(new Particle());
+      }
+
+      function drawConnections() {
+        const maxDist = 120;
+        for (let i = 0; i < particles.length; i++) {
+          for (let j = i + 1; j < particles.length; j++) {
+            const dx = particles[i].x - particles[j].x;
+            const dy = particles[i].y - particles[j].y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < maxDist) {
+              ctx.beginPath();
+              ctx.moveTo(particles[i].x, particles[i].y);
+              ctx.lineTo(particles[j].x, particles[j].y);
+              ctx.strokeStyle = `rgba(0,210,255,${0.06 * (1 - dist / maxDist)})`;
+              ctx.lineWidth = 0.5;
+              ctx.stroke();
+            }
+          }
+        }
+      }
+
+      // Gradient orbs
+      function drawOrbs() {
+        const orbs = [
+          { x: W * 0.15, y: H * 0.25, r: 350, c: 'rgba(108,47,255,0.07)' },
+          { x: W * 0.85, y: H * 0.6, r: 300, c: 'rgba(0,210,255,0.06)' },
+          { x: W * 0.5, y: H * 0.9, r: 250, c: 'rgba(255,45,120,0.04)' },
+        ];
+        orbs.forEach(o => {
+          const g = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, o.r);
+          g.addColorStop(0, o.c);
+          g.addColorStop(1, 'transparent');
+          ctx.fillStyle = g;
+          ctx.fillRect(0, 0, W, H);
+        });
+      }
+
+      let frame;
+      function animate() {
+        ctx.clearRect(0, 0, W, H);
+        drawOrbs();
+        particles.forEach(p => { p.update(); p.draw(); });
+        drawConnections();
+        frame = requestAnimationFrame(animate);
+      }
+
+      window.addEventListener('resize', () => { resize(); initParticles(); });
+      resize();
+      initParticles();
+      animate();
+    })();
+
+    // ── SCROLL REVEAL ────────────────────────────────────────────
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach((e, i) => {
+        if (e.isIntersecting) {
+          e.target.style.transitionDelay = `${(Array.from(e.target.parentElement.children).indexOf(e.target) % 6) * 0.07}s`;
+          e.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+    // ── FORMAT CHIP SELECTION ─────────────────────────────────────
+    let selectedFormat = 'mp4';
+    document.querySelectorAll('.fmt-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('.fmt-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        selectedFormat = chip.dataset.fmt;
+      });
+    });
+
+    // ── PASTE BUTTON ──────────────────────────────────────────────
+    document.getElementById('btnPaste').addEventListener('click', async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        document.getElementById('urlInput').value = text;
+        document.getElementById('urlInput').focus();
+      } catch {
+        document.getElementById('urlInput').focus();
+      }
+    });
+
+    // ── PLATFORM CARDS → FILL URL HINT ───────────────────────────
+    document.querySelectorAll('.platform-card').forEach(card => {
+      card.addEventListener('click', () => {
+        document.getElementById('urlInput').focus();
+        document.getElementById('urlInput').placeholder = 'Paste URL ' + card.querySelector('.platform-name').textContent + ' disini...';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+    });
+
+    // ── HELPER: show status ───────────────────────────────────────
+    function showStatus(msg, type = 'info') {
+      const el = document.getElementById('statusMsg');
+      el.textContent = msg;
+      el.className = 'status-msg ' + type;
+      el.style.display = 'block';
+    }
+
+    function hideStatus() {
+      document.getElementById('statusMsg').style.display = 'none';
+    }
+
+    // ── MODAL HELPERS ─────────────────────────────────────────────
+    function showModal(title, sub, progress = 0) {
+      document.getElementById('modalTitle').textContent = title;
+      document.getElementById('modalSub').textContent = sub;
+      document.getElementById('progressFill').style.width = progress + '%';
+      document.getElementById('progressText').textContent = progress + '%';
+      document.getElementById('modalOverlay').classList.add('show');
+    }
+
+    function updateModal(progress, sub) {
+      document.getElementById('progressFill').style.width = progress + '%';
+      document.getElementById('progressText').textContent = progress + '%';
+      if (sub) document.getElementById('modalSub').textContent = sub;
+    }
+
+    function hideModal() {
+      document.getElementById('modalOverlay').classList.remove('show');
+    }
+
+    function setLoading(state) {
+      const btn = document.getElementById('btnDownload');
+      const spinner = document.getElementById('spinner');
+      const btnText = document.getElementById('btnText');
+      btn.disabled = state;
+      spinner.style.display = state ? 'block' : 'none';
+      btnText.textContent = state ? 'Memproses...' : '⬇ Download Sekarang';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  LANNGOOD.ID — Download Engine v3
+    //  Mode auto: Server (yt-dlp) → Cobalt API → CORS Proxy → Fallback
+    // ═══════════════════════════════════════════════════════════
+
+    const IS_SERVER = window.location.protocol !== 'file:' && window.location.hostname !== '';
+
+    // CORS proxies to bypass browser restrictions in file:// mode
+    const CORS_PROXIES = [
+      url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+      url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    ];
+
+    // Cobalt public instances (updated 2025)
+    const COBALT_ENDPOINTS = [
+      'https://cobalt.tools/api/json',
+      'https://co.wuk.sh/api/json',
+      'https://cobalt.api.timelessnesses.me/api/json',
+      'https://cobalt.urdh.dev/api/json',
+    ];
+
+    // ── Fetch with timeout helper ─────────────────────────────────
+    async function fetchTimeout(url, opts = {}, ms = 15000) {
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), ms);
+      try {
+        const r = await fetch(url, { ...opts, signal: controller.signal });
+        return r;
+      } finally {
+        clearTimeout(tid);
+      }
+    }
+
+    // ── Try one cobalt endpoint (direct + proxied) ────────────────
+    async function tryCobaltEndpoint(endpoint, payload) {
+      const opts = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(payload),
+      };
+
+      // 1. Direct request first
+      try {
+        const r = await fetchTimeout(endpoint, opts, 10000);
+        if (r.ok) {
+          const d = await r.json();
+          if ((d.status === 'redirect' || d.status === 'stream' || d.status === 'tunnel') && d.url) {
+            return { url: d.url, filename: d.filename || 'lanngood_video' };
+          }
+          if (d.status === 'picker' && d.picker?.length) {
+            return { url: d.picker[0].url, filename: 'lanngood_video' };
+          }
+          if (d.status === 'error') throw new Error(d.text || 'API menolak URL ini');
+        }
+      } catch (e) {
+        if (e.message && !e.message.includes('abort') && !e.message.includes('fetch')) throw e;
+        // CORS / network error → try proxies
+      }
+
+      // 2. Try via CORS proxies
+      for (const makeProxy of CORS_PROXIES) {
+        try {
+          const proxiedUrl = makeProxy(endpoint);
+          // For allorigins, we need to pass the body differently
+          const proxyOpts = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify(payload),
+          };
+          const r = await fetchTimeout(proxiedUrl, proxyOpts, 14000);
+          if (!r.ok) continue;
+          const text = await r.text();
+          if (!text || text.trim() === '') continue;
+          const d = JSON.parse(text);
+          if ((d.status === 'redirect' || d.status === 'stream' || d.status === 'tunnel') && d.url) {
+            return { url: d.url, filename: d.filename || 'lanngood_video' };
+          }
+          if (d.status === 'picker' && d.picker?.length) {
+            return { url: d.picker[0].url, filename: 'lanngood_video' };
+          }
+        } catch { /* try next */ }
+      }
+      return null;
+    }
+
+    // ── Main cobalt download ──────────────────────────────────────
+    async function cobaltDownload(videoUrl, audioOnly, quality) {
+      const payload = {
+        url: videoUrl,
+        videoQuality: (!quality || quality === 'best') ? '1080' : quality,
+        downloadMode: audioOnly ? 'audio' : 'auto',
+        audioFormat: 'mp3',
+        filenameStyle: 'pretty',
+        tiktokFullAudio: false,
+      };
+
+      for (const endpoint of COBALT_ENDPOINTS) {
+        updateModal(25 + COBALT_ENDPOINTS.indexOf(endpoint) * 8, `Mencoba server ${COBALT_ENDPOINTS.indexOf(endpoint) + 1}/${COBALT_ENDPOINTS.length}...`);
+        try {
+          const result = await tryCobaltEndpoint(endpoint, payload);
+          if (result) return result;
+        } catch (e) {
+          if (e.message && e.message.includes('menolak')) throw e;
+        }
+      }
+      throw new Error('CORS_BLOCK');
+    }
+
+    // ── Check server status (yt-dlp + ffmpeg) ────────────────────
+    let _serverStatus = null;
+    async function getServerStatus() {
+      if (_serverStatus !== null) return _serverStatus;
+      try {
+        const r = await fetchTimeout('/api/status', {}, 4000);
+        _serverStatus = await r.json();
+      } catch { _serverStatus = { ytdlp_ready: false, ffmpeg_ready: false }; }
+      return _serverStatus;
+    }
+    // backward compat
+    async function isYtDlpReady() {
+      const s = await getServerStatus();
+      return s.ytdlp_ready === true;
+    }
+
+    // ── Server mode (Node.js + yt-dlp) ───────────────────────────
+    async function serverDownload(videoUrl, format, quality) {
+      const infoRes = await fetchTimeout('/api/info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: videoUrl }),
+      }, 25000);
+      const infoData = await infoRes.json();
+      if (!infoRes.ok || infoData.error) throw new Error(infoData.error || 'Gagal ambil info');
+
+      updateModal(50, 'Memproses & mengunduh file...');
+
+      const dlRes = await fetchTimeout('/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: videoUrl, format, quality }),
+      }, 120000);
+
+      if (!dlRes.ok) {
+        const err = await dlRes.json().catch(() => ({}));
+        throw new Error(err.error || 'Download server gagal');
+      }
+
+      updateModal(85, 'Menyiapkan file...');
+      const cd = dlRes.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename[^;=\n]*=([^;\n]*)/)
+      const actualFmt = dlRes.headers.get('X-Actual-Format') || format;
+      const ffmpegAvail = dlRes.headers.get('X-Ffmpeg-Available') === 'true';
+      const filename = m ? m[1].replace(/['"]/g, '').trim() : `lanngood_video.${actualFmt}`;
+      const blob = await dlRes.blob();
+      return { url: URL.createObjectURL(blob), filename, info: infoData, isBlob: true, actualFormat: actualFmt, ffmpegAvail };
+    }
+
+    // ── Show fallback panel when all APIs fail ────────────────────
+    function showFallback(videoUrl) {
+      hideModal();
+      setLoading(false);
+      const enc = encodeURIComponent(videoUrl);
+      const panel = document.getElementById('result-panel');
+      panel.style.display = 'block';
+      panel.innerHTML = `
+        <div class="result-card" style="flex-direction:column; align-items:flex-start; background:rgba(255,165,0,0.06); border-color:rgba(255,165,0,0.3);">
+          <div style="font-size:0.85rem; font-weight:700; color:#ffaa00; margin-bottom:8px;">⚠ Mode Browser Langsung — Pilih downloader:</div>
+          <div style="font-size:0.78rem; color:var(--muted); margin-bottom:14px;">
+            Browser memblokir request langsung ke API eksternal. Klik salah satu di bawah untuk download:
+          </div>
+          <div style="display:flex; flex-wrap:wrap; gap:8px;">
+            <a class="btn-dl-link" href="https://cobalt.tools" target="_blank" style="background:linear-gradient(135deg,#6c2fff,#00d2ff);">🔗 Cobalt.tools</a>
+            <a class="btn-dl-link" href="https://tikmate.online/?url=${enc}" target="_blank" style="background:linear-gradient(135deg,#111,#333); color:#fff; border:1px solid #444;">🎵 TikMate</a>
+            <a class="btn-dl-link" href="https://snapinsta.app/?url=${enc}" target="_blank" style="background:linear-gradient(135deg,#c13584,#833ab4); color:#fff;">📸 SnapInsta</a>
+            <a class="btn-dl-link" href="https://y2mate.com/youtube/${enc}" target="_blank" style="background:linear-gradient(135deg,#ff0000,#cc0000);">▶ Y2Mate</a>
+          </div>
+          <div style="margin-top:14px; padding:10px 14px; background:rgba(0,210,255,0.07); border:1px solid rgba(0,210,255,0.2); border-radius:8px; font-family:'JetBrains Mono',monospace; font-size:0.7rem; color:var(--cyan);">
+            💡 Untuk download langsung: jalankan <b>node server.js</b> lalu buka <b>http://localhost:3000</b>
+          </div>
+        </div>
+      `;
+      showStatus('ℹ Buka website dari server untuk fungsi download langsung.', 'info');
+    }
+
+    // ── MAIN DOWNLOAD HANDLER ─────────────────────────────────────
+    document.getElementById('btnDownload').addEventListener('click', async () => {
+      const videoUrl = document.getElementById('urlInput').value.trim();
+      const quality = document.getElementById('qualitySelect').value;
+
+      if (!videoUrl) {
+        showStatus('⚠ Masukkan URL video terlebih dahulu!', 'error');
+        return;
+      }
+      if (!videoUrl.startsWith('http')) {
+        showStatus('⚠ URL tidak valid. Harus dimulai dengan https://', 'error');
+        return;
+      }
+
+      hideStatus();
+      setLoading(true);
+      document.getElementById('result-panel').style.display = 'none';
+      showModal('Mengambil Info Video', 'Menghubungi server...', 5);
+
+      try {
+        let result;
+
+        if (IS_SERVER) {
+          updateModal(15, 'Memeriksa server...');
+          const ytdlpOk = await isYtDlpReady();
+
+          if (ytdlpOk) {
+            // yt-dlp tersedia — selalu pakai server langsung (tanpa Cobalt)
+            // Server akan handle MP3: dengan ffmpeg → mp3, tanpa ffmpeg → m4a
+            updateModal(25, 'Terhubung ke yt-dlp...');
+            try {
+              result = await serverDownload(videoUrl, selectedFormat, quality);
+            } catch (e) {
+              if (e.ytdlpMissing) {
+                updateModal(35, 'Beralih ke Cobalt API...');
+                const audioOnly = selectedFormat === 'mp3';
+                result = await cobaltDownload(videoUrl, audioOnly, quality);
+              } else throw e;
+            }
+          } else {
+            // yt-dlp tidak ada — langsung pakai Cobalt
+            updateModal(25, 'yt-dlp tidak ditemukan, menggunakan Cobalt API...');
+            const audioOnly = selectedFormat === 'mp3';
+            try {
+              result = await cobaltDownload(videoUrl, audioOnly, quality);
+            } catch (e) {
+              if (e.message === 'CORS_BLOCK') { showFallback(videoUrl); return; }
+              throw e;
+            }
+          }
+        } else {
+          updateModal(15, 'Mencari server download yang aktif...');
+          try {
+            const audioOnly = selectedFormat === 'mp3';
+            result = await cobaltDownload(videoUrl, audioOnly, quality);
+          } catch (e) {
+            if (e.message === 'CORS_BLOCK') {
+              showFallback(videoUrl);
+              return;
+            }
+            throw e;
+          }
+        }
+
+        updateModal(100, 'Selesai! ✅');
+
+        setTimeout(() => {
+          hideModal();
+          setLoading(false);
+
+          const actualFmt = result.actualFormat || selectedFormat;
+          const fname = result.filename
+            ? (result.filename.includes('.') ? result.filename : result.filename + '.' + actualFmt)
+            : `lanngood_video.${actualFmt}`;
+          const info = result.info || {};
+
+          // Cek apakah MP3 diminta tapi dapat format lain (karena ffmpeg tidak ada)
+          const mp3Fallback = selectedFormat === 'mp3' && actualFmt !== 'mp3';
+          const formatLabel = actualFmt.toUpperCase();
+
+          const panel = document.getElementById('result-panel');
+          panel.style.display = 'block';
+          panel.innerHTML = `
+            <div class="result-card">
+              ${info.thumbnail ? `<img class="result-thumb" src="${info.thumbnail}" alt="thumb" onerror="this.style.display='none'" />` : '<span style="font-size:2rem">🎬</span>'}
+              <div class="result-info">
+                <div class="result-title">${info.title || fname}</div>
+                <div class="result-meta">${info.uploader || 'Audio'} · ${formatLabel} · ${quality === 'best' ? 'Best Quality' : quality + 'p'}</div>
+                ${mp3Fallback ? `<div style="margin-top:5px;font-size:0.68rem;color:#ffaa00;">⚠ Format ${formatLabel} (ffmpeg tidak ada di server — install ffmpeg untuk MP3)</div>` : ''}
+              </div>
+              <a class="btn-dl-link" href="${result.url}" download="${fname}" target="_blank" rel="noopener noreferrer">
+                ⬇ Unduh File
+              </a>
+            </div>
+          `;
+          const statusMsg = mp3Fallback
+            ? `✅ Berhasil! File dalam format ${formatLabel} (bisa diputar). Install ffmpeg di server untuk MP3.`
+            : '✅ Berhasil! Klik tombol Unduh File untuk menyimpan.';
+          showStatus(statusMsg, 'success');
+        }, 400);
+
+      } catch (err) {
+        hideModal();
+        setLoading(false);
+        const msg = err.message || 'Terjadi kesalahan';
+        if (msg.toLowerCase().includes('private') || msg.toLowerCase().includes('privat')) {
+          showStatus('🔒 Video bersifat privat atau memerlukan login.', 'error');
+        } else if (msg.toLowerCase().includes('not support') || msg.toLowerCase().includes('tidak didukung')) {
+          showStatus('❌ Platform ini belum didukung untuk mode langsung.', 'error');
+        } else {
+          showStatus('❌ ' + msg, 'error');
+        }
+        console.error('[LANNGOOD ERROR]', err);
+      }
+    });
+
+    // ── ENTER KEY ──────────────────────────────────────────────────
+    document.getElementById('urlInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') document.getElementById('btnDownload').click();
+    });
+
+    // ── TYPING PLACEHOLDER ANIMATION ──────────────────────────────
+    const placeholders = [
+      'https://www.tiktok.com/@user/video/...',
+      'https://www.instagram.com/reels/...',
+      'https://www.youtube.com/watch?v=...',
+      'https://www.facebook.com/watch?v=...',
+      'https://twitter.com/user/status/...',
+    ];
+    let phIdx = 0;
+    let charIdx = 0;
+    let typing = true;
+    const input = document.getElementById('urlInput');
+
+    function typePlaceholder() {
+      if (document.activeElement === input) { setTimeout(typePlaceholder, 200); return; }
+      const target = placeholders[phIdx];
+      if (typing) {
+        charIdx++;
+        input.placeholder = target.slice(0, charIdx);
+        if (charIdx >= target.length) { typing = false; setTimeout(typePlaceholder, 2200); }
+        else setTimeout(typePlaceholder, 38);
+      } else {
+        charIdx--;
+        input.placeholder = target.slice(0, charIdx);
+        if (charIdx <= 0) { typing = true; phIdx = (phIdx + 1) % placeholders.length; setTimeout(typePlaceholder, 400); }
+        else setTimeout(typePlaceholder, 22);
+      }
+    }
+    setTimeout(typePlaceholder, 1500);
+  </script>
+</body>
+
+</html>
