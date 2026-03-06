@@ -352,22 +352,66 @@ function downloadTikTokToFile(downloadUrl, destPath) {
 // ══════════════════════════════════════════════════════════════════
 
 /**
- * Build ffmpeg args for HDR conversion.
- *
- * FIX v3.1: Ganti '-c:a copy' → '-c:a aac -b:a 192k -ar 48000'
- * untuk menghindari error "Decoder (codec none) not found for input stream #0:1"
- * yang terjadi ketika stream audio di file sumber tidak dikenali ffmpeg.
- *
- * Tambahan '-map 0:v:0 -map 0:a:0?' agar audio bersifat opsional
- * (tanda '?' = tidak error bila audio stream tidak ada).
- *
- * Mode HDR10 (zscale tersedia):
- *   SDR → linear light → BT.2020 gamut → PQ/SMPTE ST 2084 transfer
- *
- * Mode HDR+ Enhanced (tanpa zscale):
- *   gamma > 1.0 = lebih terang, curves untuk angkat shadow + boost highlight.
+ * Probe file dengan ffprobe untuk cek apakah audio stream valid.
+ * Returns true jika ada audio stream dengan codec yang bukan 'none'/'unknown'.
+ * Ini adalah FIX UTAMA untuk error:
+ *   "Decoder (codec none) not found for input stream #0:1"
+ * — masalahnya bukan di -c:a copy vs aac, tapi ffmpeg mencoba MAP stream
+ *   audio yang codec-nya 'none', lalu gagal saat decode. Solusinya:
+ *   jangan map audio sama sekali jika codec-nya tidak valid.
  */
-function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
+function probeHasValidAudio(inputPath) {
+  return new Promise((resolve) => {
+    // Cari ffprobe di lokasi yang sama dengan ffmpeg
+    const ffprobeBin = FFMPEG_PATH === 'ffmpeg'
+      ? 'ffprobe'
+      : FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
+
+    const args = [
+      '-v', 'quiet',
+      '-print_format', 'json',
+      '-show_streams',
+      '-select_streams', 'a',
+      inputPath,
+    ];
+
+    const proc = spawn(ffprobeBin, args);
+    let stdout = '';
+    proc.stdout.on('data', d => { stdout += d.toString(); });
+    proc.on('error', () => resolve(false)); // ffprobe tidak ada → asumsikan tidak ada audio
+    proc.on('close', (code) => {
+      if (code !== 0 || !stdout.trim()) return resolve(false);
+      try {
+        const info = JSON.parse(stdout);
+        const streams = info.streams || [];
+        // Audio valid = ada stream dengan codec_name yang bukan 'none'/'unknown'/kosong
+        const hasValid = streams.some(s =>
+          s.codec_name && s.codec_name !== 'none' && s.codec_name !== 'unknown' && s.codec_name !== 'null'
+        );
+        console.log(`  [PROBE] Audio streams: ${streams.map(s => s.codec_name).join(', ') || 'none'} → valid=${hasValid}`);
+        resolve(hasValid);
+      } catch {
+        resolve(false);
+      }
+    });
+  });
+}
+
+/**
+ * Build ffmpeg args for HDR conversion.
+ * hasAudio = hasil probe — jika false, JANGAN map audio sama sekali.
+ * Ini fix root cause dari "Decoder (codec none) not found for input stream #0:1"
+ */
+function buildHdrFfmpegArgs(inputPath, outputPath, useZscale, hasAudio) {
+  // ── Audio args: hanya jika stream audio valid ─────────────────
+  const audioArgs = hasAudio
+    ? ['-c:a', 'aac', '-b:a', '192k', '-ar', '48000']
+    : ['-an']; // -an = no audio, skip seluruh audio pipeline
+
+  const mapArgs = hasAudio
+    ? ['-map', '0:v:0', '-map', '0:a:0']
+    : ['-map', '0:v:0'];
+
   if (useZscale) {
     // ── SDR → HDR10 (BT.2020 + PQ) ──────────────────────────────
     const vf = [
@@ -380,8 +424,7 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
 
     return [
       '-y', '-i', inputPath,
-      '-map', '0:v:0',
-      '-map', '0:a:0?',          // '?' → audio opsional, tidak crash jika tidak ada
+      ...mapArgs,
       '-vf', vf,
       '-c:v', 'libx265',
       '-crf', '20',
@@ -392,16 +435,11 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
       ':max-cll=1000,400',
       '-tag:v', 'hvc1',
       '-movflags', '+faststart',
-      '-c:a', 'aac',             // FIX: re-encode audio, hindari "codec none" error
-      '-b:a', '192k',
-      '-ar', '48000',            // normalisasi sample rate ke 48kHz
+      ...audioArgs,
       outputPath,
     ];
   } else {
     // ── HDR+ Enhanced (tanpa zscale) ─────────────────────────────
-    // gamma > 1.0 = terangkan midtone (BUKAN < 1.0 yang malah menggelapkan)
-    // curves: angkat shadow halus + jaga highlight tidak clipping
-    // unsharp ringan: tambah clarity tanpa artefak
     const vf = [
       'eq=gamma=1.2:contrast=1.08:brightness=0.03:saturation=1.25',
       "curves=master='0/0 0.12/0.15 0.5/0.55 0.88/0.92 1/1'",
@@ -410,16 +448,13 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
 
     return [
       '-y', '-i', inputPath,
-      '-map', '0:v:0',
-      '-map', '0:a:0?',          // '?' → audio opsional, tidak crash jika tidak ada
+      ...mapArgs,
       '-vf', vf,
       '-c:v', 'libx264',
       '-crf', '18',
       '-preset', 'fast',
       '-movflags', '+faststart',
-      '-c:a', 'aac',             // FIX: re-encode audio, hindari "codec none" error
-      '-b:a', '192k',
-      '-ar', '48000',            // normalisasi sample rate ke 48kHz
+      ...audioArgs,
       outputPath,
     ];
   }
@@ -527,13 +562,20 @@ function downloadSourceVideo(videoUrl, quality, uid) {
 
 /**
  * Run ffmpeg HDR conversion.
+ * Probe audio dulu — jika codec audio 'none', skip audio sepenuhnya (-an).
  * Auto-retries with enhanced mode if HDR10 (zscale) fails.
  */
-function runHdrConversion(srcPath, hdrPath, attempt) {
+async function runHdrConversion(srcPath, hdrPath, attempt) {
+  // Probe hanya di attempt pertama, lalu pass hasAudio ke attempt berikutnya
+  // lewat closure. Tapi karena retry memanggil ulang, kita probe tiap kali —
+  // ffprobe sangat cepat (<1 detik) jadi tidak masalah.
+  const hasAudio = await probeHasValidAudio(srcPath);
+  console.log(`  [HDR-CONV] hasAudio=${hasAudio}`);
+
   return new Promise((resolve, reject) => {
     const useZscale = attempt === 1 && ZSCALE_AVAILABLE;
     const hdrLabel = useZscale ? 'HDR10' : 'HDR+';
-    const args = buildHdrFfmpegArgs(srcPath, hdrPath, useZscale);
+    const args = buildHdrFfmpegArgs(srcPath, hdrPath, useZscale, hasAudio);
 
     console.log(`  [HDR-CONV] Converting to ${hdrLabel} (attempt ${attempt})...`);
     const bin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
