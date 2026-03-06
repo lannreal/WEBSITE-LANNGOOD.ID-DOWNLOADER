@@ -4,15 +4,15 @@
  * Compatible with Pterodactyl Panel
  */
 
-const express  = require('express');
+const express = require('express');
 const { exec, execSync, spawn } = require('child_process');
-const path     = require('path');
-const fs       = require('fs');
-const os       = require('os');
-const crypto   = require('crypto');
-const https    = require('https');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const crypto = require('crypto');
+const https = require('https');
 
-const app  = express();
+const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ── TEMP DIR ──────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ app.get('/', (req, res) => {
 //  YT-DLP DETECTION & AUTO-SETUP
 // ══════════════════════════════════════════════════════════════════
 
-let YTDLP_BIN     = null;
+let YTDLP_BIN = null;
 let YTDLP_VERSION = null;
 
 function detectYtDlp() {
@@ -71,65 +71,93 @@ function detectYtDlp() {
         console.log(`  ✅ yt-dlp: ${bin} (v${v})`);
         return true;
       }
-    } catch {}
+    } catch { }
   }
 
-  // Try via python3
-  try {
-    const v = execSync('python3 -m yt_dlp --version 2>&1', { timeout: 5000 }).toString().trim();
-    if (v && /\d{4}/.test(v)) {
-      YTDLP_BIN = 'python3 -m yt_dlp'; YTDLP_VERSION = v;
-      console.log(`  ✅ yt-dlp via python3: v${v}`);
-      return true;
-    }
-  } catch {}
+  // Try via python3 / python3.11
+  const pythons = ['python3.11', 'python3', 'python'];
+  for (const py of pythons) {
+    try {
+      const v = execSync(`${py} -m yt_dlp --version 2>&1`, { timeout: 8000 }).toString().trim();
+      if (v && /\d{4}/.test(v)) {
+        YTDLP_BIN = `${py} -m yt_dlp`; YTDLP_VERSION = v;
+        console.log(`  ✅ yt-dlp via ${py}: v${v}`);
+        return true;
+      }
+    } catch { }
+  }
 
-  // Try via pip
-  try {
-    execSync('pip install yt-dlp -q', { timeout: 60000 });
-    const v = execSync('yt-dlp --version 2>&1', { timeout: 5000 }).toString().trim();
-    if (v) { YTDLP_BIN = 'yt-dlp'; YTDLP_VERSION = v; return true; }
-  } catch {}
+  // Try pip install
+  const pips = ['pip', 'pip3', 'pip3.11', 'python3.11 -m pip', 'python3 -m pip'];
+  for (const pip of pips) {
+    try {
+      execSync(`${pip} install yt-dlp -q 2>&1`, { timeout: 60000 });
+      const v = execSync('yt-dlp --version 2>&1', { timeout: 5000 }).toString().trim();
+      if (v && /\d{4}/.test(v)) { YTDLP_BIN = 'yt-dlp'; YTDLP_VERSION = v; return true; }
+    } catch { }
+  }
 
   console.warn('  ⚠  yt-dlp TIDAK ditemukan!');
   return false;
 }
 
-// Auto-download binary (Linux)
+// Auto-download binary (Linux) — tanpa butuh python/pip
 function autoInstallYtDlp(cb) {
   if (os.platform() === 'win32') return cb(false);
   const dest = path.join(__dirname, 'yt-dlp');
-  console.log('  ⬇  Downloading yt-dlp...');
-  const file = fs.createWriteStream(dest);
+  console.log('  ⬇  Downloading yt-dlp binary dari GitHub...');
 
-  function download(url, redirectCount = 0) {
-    if (redirectCount > 5) return cb(false);
-    https.get(url, { headers: { 'User-Agent': 'lanngood-installer' } }, res => {
-      if (res.statusCode === 301 || res.statusCode === 302) {
+  // Hapus file lama kalau ada
+  try { fs.unlinkSync(dest); } catch { }
+
+  const file = fs.createWriteStream(dest);
+  let finished = false;
+
+  function download(url, redirectCount) {
+    if (redirectCount > 10) { file.close(); return cb(false); }
+    const mod = url.startsWith('https') ? https : require('http');
+    mod.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
         return download(res.headers.location, redirectCount + 1);
+      }
+      if (res.statusCode !== 200) {
+        file.close();
+        console.error('  ❌ Download gagal, status: ' + res.statusCode);
+        return cb(false);
       }
       res.pipe(file);
       file.on('finish', () => {
+        if (finished) return;
+        finished = true;
         file.close(() => {
           try {
-            execSync(`chmod +x "${dest}"`);
-            const v = execSync(`"${dest}" --version`, { timeout: 5000 }).toString().trim();
-            YTDLP_BIN = dest; YTDLP_VERSION = v;
-            console.log('  ✅ yt-dlp auto-install berhasil! v' + v);
-            cb(true);
-          } catch { cb(false); }
+            execSync('chmod +x "' + dest + '"');
+            const v = execSync('"' + dest + '" --version 2>&1', { timeout: 8000 }).toString().trim();
+            if (v && v.length > 0) {
+              YTDLP_BIN = dest; YTDLP_VERSION = v;
+              console.log('  ✅ yt-dlp berhasil didownload! v' + v);
+              return cb(true);
+            }
+            cb(false);
+          } catch (e) {
+            console.error('  ❌ yt-dlp tidak bisa dijalankan:', e.message);
+            cb(false);
+          }
         });
       });
-    }).on('error', () => cb(false));
+    }).on('error', e => {
+      console.error('  ❌ Download error:', e.message);
+      cb(false);
+    });
   }
-  download('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp');
+  download('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', 0);
 }
 
 // ── FFMPEG DETECTION ─────────────────────────────────────────────
 
 let FFMPEG_AVAILABLE = false;
-let FFMPEG_PATH      = 'ffmpeg';
-let FFMPEG_DIR       = '';  // folder ffmpeg untuk --ffmpeg-location
+let FFMPEG_PATH = 'ffmpeg';
+let FFMPEG_DIR = '';  // folder ffmpeg untuk --ffmpeg-location
 
 function detectFfmpeg() {
   // Cek kandidat — prioritaskan yang ada di folder project (Windows-friendly)
@@ -149,13 +177,13 @@ function detectFfmpeg() {
       const vOut = execSync(`"${bin}" -version 2>&1`, { timeout: 5000 }).toString();
       if (!vOut.includes('ffmpeg version')) continue;
       FFMPEG_AVAILABLE = true;
-      FFMPEG_PATH      = bin;
+      FFMPEG_PATH = bin;
       // --ffmpeg-location = FOLDER tempat ffmpeg.exe berada (bukan path file-nya!)
-      FFMPEG_DIR       = path.dirname(path.resolve(bin));
+      FFMPEG_DIR = path.dirname(path.resolve(bin));
       console.log(`  ✅ ffmpeg: ${path.resolve(bin)}`);
       console.log(`  📁 ffmpeg dir: ${FFMPEG_DIR}`);
       return true;
-    } catch {}
+    } catch { }
   }
 
   // Coba via PATH tanpa path absolut
@@ -163,12 +191,12 @@ function detectFfmpeg() {
     const vOut = execSync('ffmpeg -version 2>&1', { timeout: 5000 }).toString();
     if (vOut.includes('ffmpeg version')) {
       FFMPEG_AVAILABLE = true;
-      FFMPEG_PATH      = 'ffmpeg';
-      FFMPEG_DIR       = '';   // biarkan yt-dlp temukan sendiri via PATH
+      FFMPEG_PATH = 'ffmpeg';
+      FFMPEG_DIR = '';   // biarkan yt-dlp temukan sendiri via PATH
       console.log('  ✅ ffmpeg ditemukan di PATH');
       return true;
     }
-  } catch {}
+  } catch { }
 
   console.warn('  ⚠  ffmpeg tidak ditemukan!');
   console.warn(`     Taruh ffmpeg.exe di: ${__dirname}`);
@@ -209,7 +237,7 @@ function cleanupOld() {
       const fp = path.join(TEMP_DIR, f);
       if (now - fs.statSync(fp).mtimeMs > 20 * 60 * 1000) fs.unlinkSync(fp);
     });
-  } catch {}
+  } catch { }
 }
 setInterval(cleanupOld, 10 * 60 * 1000);
 
@@ -247,7 +275,7 @@ app.post('/api/info', requireYtDlp, (req, res) => {
   try { new URL(url); } catch { return res.status(400).json({ error: 'Format URL salah' }); }
 
   const safeUrl = url.replace(/["`]/g, '');
-  const cmd     = `"${YTDLP_BIN}" --no-warnings --dump-json --no-playlist "${safeUrl}"`;
+  const cmd = `"${YTDLP_BIN}" --no-warnings --dump-json --no-playlist "${safeUrl}"`;
 
   exec(cmd, { timeout: 35000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) {
@@ -277,10 +305,10 @@ app.post('/api/download', requireYtDlp, (req, res) => {
 
   cleanupOld();
 
-  const uid     = crypto.randomBytes(8).toString('hex');
-  const outTpl  = path.join(TEMP_DIR, `${uid}_%(title).60s.%(ext)s`);
+  const uid = crypto.randomBytes(8).toString('hex');
+  const outTpl = path.join(TEMP_DIR, `${uid}_%(title).60s.%(ext)s`);
   const safeUrl = url.replace(/["`]/g, '');
-  const fmtStr  = buildFormatStr(format, quality);
+  const fmtStr = buildFormatStr(format, quality);
 
   // Build args berbeda untuk MP3 vs video
   let args;
@@ -326,10 +354,10 @@ app.post('/api/download', requireYtDlp, (req, res) => {
 
   let spawnCmd, spawnArgs;
   if (YTDLP_BIN.startsWith('python3')) {
-    spawnCmd  = 'python3';
+    spawnCmd = 'python3';
     spawnArgs = ['-m', 'yt_dlp', ...args];
   } else {
-    spawnCmd  = YTDLP_BIN;
+    spawnCmd = YTDLP_BIN;
     spawnArgs = args;
   }
 
@@ -338,7 +366,7 @@ app.post('/api/download', requireYtDlp, (req, res) => {
   const proc = spawn(spawnCmd, spawnArgs);
   let stderr = '';
   proc.stderr.on('data', d => { stderr += d.toString(); });
-  proc.stdout.on('data', () => {});
+  proc.stdout.on('data', () => { });
 
   proc.on('error', err => {
     console.error('[SPAWN ERR]', err.message);
@@ -351,10 +379,10 @@ app.post('/api/download', requireYtDlp, (req, res) => {
         const msg = stderr.toLowerCase();
         let errText = 'Download gagal';
         if (msg.includes('unsupported url')) errText = 'URL tidak didukung';
-        else if (msg.includes('private'))    errText = 'Video bersifat privat';
-        else if (msg.includes('geo'))        errText = 'Video dibatasi wilayah';
-        else if (msg.includes('404'))        errText = 'Video tidak ditemukan';
-        else if (msg.includes('ffmpeg'))     errText = 'ffmpeg tidak ditemukan di server — install ffmpeg dulu';
+        else if (msg.includes('private')) errText = 'Video bersifat privat';
+        else if (msg.includes('geo')) errText = 'Video dibatasi wilayah';
+        else if (msg.includes('404')) errText = 'Video tidak ditemukan';
+        else if (msg.includes('ffmpeg')) errText = 'ffmpeg tidak ditemukan di server — install ffmpeg dulu';
         else if (msg.includes('postprocessor')) errText = 'Konversi audio gagal — ffmpeg diperlukan';
         console.error('[STDERR]', stderr.slice(0, 400));
         return res.status(500).json({ error: errText, detail: stderr.slice(0, 300) });
@@ -374,7 +402,7 @@ app.post('/api/download', requireYtDlp, (req, res) => {
     if (!ext) ext = format === 'mp3' ? 'mp3' : 'mp4';
 
     // Untuk MP3 request: paksa nama file berakhiran .mp3
-    const rawName  = files[0].replace(`${uid}_`, '');
+    const rawName = files[0].replace(`${uid}_`, '');
     const baseName = rawName.replace(/\.[^.]+$/, '');   // hapus extension lama
     // Tentukan extension final
     let finalExt;
@@ -404,7 +432,7 @@ app.post('/api/download', requireYtDlp, (req, res) => {
 
     const stream = fs.createReadStream(filePath);
     stream.pipe(res);
-    const cleanup = () => { try { fs.unlinkSync(filePath); } catch {} };
+    const cleanup = () => { try { fs.unlinkSync(filePath); } catch { } };
     stream.on('end', () => setTimeout(cleanup, 3000));
     res.on('close', cleanup);
   });
