@@ -392,57 +392,48 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
       outputPath,
     ];
   } else {
-    // ── HDR+ Enhanced (tanpa zscale) ─────────────────────────────
+    // ── HDR+ Natural (tanpa zscale) — "Invisible Enhancement" ────
     //
-    // FILOSOFI: HDR+ bukan "lebih terang & lebih jenuh".
-    // Tujuan: dynamic range lebih lebar, shadow & highlight tetap terjaga,
-    // warna hidup tapi TIDAK membakar mata.
+    // FILOSOFI: Penonton tidak sadar sudah diproses.
+    // Kalau dibandingkan side-by-side terasa sedikit lebih "bersih"
+    // dan detail lebih terjaga — tapi tidak ada yang terasa berlebihan.
     //
-    // Perbandingan vs versi lama yang menyilaukan:
-    //  ┌─────────────┬──────────────┬──────────────┬─────────────────────────┐
-    //  │ Parameter   │ Lama (silau) │ Baru (seimbang)│ Alasan                │
-    //  ├─────────────┼──────────────┼──────────────┼─────────────────────────┤
-    //  │ gamma       │ 1.2          │ 1.12         │ Lift midtone lebih halus │
-    //  │ contrast    │ 1.08         │ 1.04         │ Hindari crush shadow     │
-    //  │ brightness  │ 0.03         │ 0.01         │ Biarkan gamma yang angkat│
-    //  │ saturation  │ 1.25 (garish)│ 1.10         │ Vivid tapi natural       │
-    //  │ curves      │ master agresif│ per-channel  │ Kontrol R/G/B terpisah   │
-    //  │             │ 1→1 (clipping)│ rolloff 0.975│ Highlight tidak silau   │
-    //  │ unsharp     │ 5x5 str=0.3  │ 3x3 str=0.12 │ Clarity tanpa amplify   │
-    //  │             │ (harsh)      │              │ noise / grain            │
-    //  └─────────────┴──────────────┴──────────────┴─────────────────────────┘
+    // Strategi: hanya 2 filter, parameter sangat konservatif:
     //
-    // Kunci utama anti-silau = highlight rolloff (1/0.975):
-    //   1.0 → putih 100% → terlalu menyilaukan di layar mobile/OLED
-    //   0.975 → highlight sedikit turun → terasa "lembut" dan nyaman di mata
+    //  1. curves saja (tanpa eq) — hindari double-processing
+    //     gamma dan eq bisa saling mengganggu kalau digabung;
+    //     curves sendirian lebih predictable dan halus.
     //
-    // Shadow lift tipis (0/0.015):
-    //   0/0 → shadow hitam crush → detail hilang, kontras berlebihan
-    //   0/0.015 → shadow sedikit terangkat → detail tetap ada, mata tidak lelah
+    //  2. Nilai curves sangat tipis:
+    //     shadow lift  : 0/0.008  → angkat shadow 0.8% saja
+    //                               (cukup buka detail gelap, tidak bikin "grey black")
+    //     midtone      : 0.5/0.51 → naik 1% saja — hampir tidak terasa
+    //     highlight    : 1/0.988  → rolloff 1.2% — highlight sedikit lembut,
+    //                               tidak silau, tidak "faded"
+    //     Blue channel : highlight 0.985 (sedikit lebih hangat dari default)
+    //
+    //  3. unsharp sangat ringan: luma 0.06 saja
+    //     Hanya menyempurnakan ketajaman codec yang sudah ada,
+    //     tidak menambah "efek sharpening" yang terlihat.
+    //
+    // Hasil: video terasa sedikit lebih "mastered" dari aslinya,
+    //        tapi tidak ada yang mencolok.
 
     const vf = [
-      // Step 1 — Gentle gamma lift + minimal brightness + natural saturation
-      'eq=gamma=1.12:contrast=1.04:brightness=0.01:saturation=1.10',
+      // Subtle per-channel curve — tidak ada eq, tidak ada saturation boost
+      "curves=r='0/0.008 0.5/0.510 1/0.988'" +
+      ":g='0/0.008 0.5/0.510 1/0.988'" +
+      ":b='0/0.008 0.5/0.508 1/0.985'",
 
-      // Step 2 — Balanced per-channel S-curve
-      //   0/0.015  = shadow lift tipis (detail area gelap tidak crush)
-      //   0.5/0.52 = midtone sedikit naik (naturalness preserved)
-      //   1/0.975  = highlight rolloff (ANTI-SILAU — cegah clipping)
-      //   Blue lebih rendah (0.515) agar tidak terlalu "cool/dingin"
-      "curves=r='0/0.015 0.5/0.52 1/0.975'" +
-        ":g='0/0.015 0.5/0.52 1/0.975'" +
-        ":b='0/0.015 0.5/0.515 1/0.975'",
-
-      // Step 3 — Light clarity: radius kecil, strength rendah
-      //   Cukup untuk ketajaman tepi, tidak amplify noise atau skin texture
-      'unsharp=3:3:0.12:3:3:0.04',
+      // Micro-sharpening: hanya perjelas detail yang sudah ada
+      'unsharp=3:3:0.06:3:3:0.0',
     ].join(',');
 
     return [
       '-y', '-i', inputPath,
       '-vf', vf,
       '-c:v', 'libx264',
-      '-crf', '17',
+      '-crf', '16',       // lebih tinggi kualitas encode agar tidak ada degradasi
       '-preset', 'fast',
       '-movflags', '+faststart',
       '-c:a', 'copy',
