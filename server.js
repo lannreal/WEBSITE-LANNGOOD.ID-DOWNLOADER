@@ -352,65 +352,80 @@ function downloadTikTokToFile(downloadUrl, destPath) {
 // ══════════════════════════════════════════════════════════════════
 
 /**
- * Probe file dengan ffprobe untuk cek apakah audio stream valid.
- * Returns true jika ada audio stream dengan codec yang bukan 'none'/'unknown'.
- * Ini adalah FIX UTAMA untuk error:
- *   "Decoder (codec none) not found for input stream #0:1"
- * — masalahnya bukan di -c:a copy vs aac, tapi ffmpeg mencoba MAP stream
- *   audio yang codec-nya 'none', lalu gagal saat decode. Solusinya:
- *   jangan map audio sama sekali jika codec-nya tidak valid.
+ * REMUX ke MP4 bersih sebelum HDR conversion.
+ *
+ * ROOT CAUSE sebenarnya dari error "Decoder (codec none) not found for input stream #0:1":
+ * TikTok/TikWM mengembalikan file MP4 dengan stream layout aneh:
+ *   #0:0 → video (h264) ✅
+ *   #0:1 → data/cover/unknown stream dengan codec=none ❌  ← INI yang crash
+ *   #0:2 → audio (aac) ✅
+ *
+ * ffprobe -select_streams a hanya melihat stream audio murni (#0:2 = aac, valid=true),
+ * sehingga probe kita bilang "ada audio" — TAPI saat ffmpeg memproses file,
+ * ia menemukan stream #0:1 (codec none) dan crash sebelum sampai ke stream audio.
+ *
+ * Solusi: remux dulu dengan -map 0:V:0 (kapital V = video only, skip attached pics)
+ * dan -map 0:a:0? serta -ignore_unknown untuk buang semua stream aneh.
+ * Hasilnya adalah file MP4 bersih yang hanya punya 1 video + 1 audio stream.
  */
-function probeHasValidAudio(inputPath) {
-  return new Promise((resolve) => {
-    // Cari ffprobe di lokasi yang sama dengan ffmpeg
-    const ffprobeBin = FFMPEG_PATH === 'ffmpeg'
-      ? 'ffprobe'
-      : FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
-
+function remuxToClean(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const bin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
     const args = [
-      '-v', 'quiet',
-      '-print_format', 'json',
-      '-show_streams',
-      '-select_streams', 'a',
-      inputPath,
+      '-y', '-i', inputPath,
+      '-map', '0:V:0',    // kapital V = video stream saja, SKIP attached pictures/cover
+      '-map', '0:a:0?',   // audio pertama, opsional
+      '-c:v', 'copy',
+      '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
+      '-ignore_unknown',   // buang stream yang tidak dikenali (data, subtitle, dll)
+      '-movflags', '+faststart',
+      outputPath,
     ];
 
-    const proc = spawn(ffprobeBin, args);
-    let stdout = '';
-    proc.stdout.on('data', d => { stdout += d.toString(); });
-    proc.on('error', () => resolve(false)); // ffprobe tidak ada → asumsikan tidak ada audio
-    proc.on('close', (code) => {
-      if (code !== 0 || !stdout.trim()) return resolve(false);
-      try {
-        const info = JSON.parse(stdout);
-        const streams = info.streams || [];
-        // Audio valid = ada stream dengan codec_name yang bukan 'none'/'unknown'/kosong
-        const hasValid = streams.some(s =>
-          s.codec_name && s.codec_name !== 'none' && s.codec_name !== 'unknown' && s.codec_name !== 'null'
-        );
-        console.log(`  [PROBE] Audio streams: ${streams.map(s => s.codec_name).join(', ') || 'none'} → valid=${hasValid}`);
-        resolve(hasValid);
-      } catch {
-        resolve(false);
+    console.log('  [REMUX] Cleaning container sebelum HDR conversion...');
+    const proc = spawn(bin, args);
+    let stderr = '';
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', reject);
+    proc.on('close', code => {
+      if (code !== 0) {
+        // Jika remux dengan audio gagal, coba tanpa audio
+        console.warn('  [REMUX] Gagal dengan audio, coba tanpa audio...');
+        const argsNoAudio = [
+          '-y', '-i', inputPath,
+          '-map', '0:V:0',
+          '-c:v', 'copy',
+          '-an',
+          '-ignore_unknown',
+          '-movflags', '+faststart',
+          outputPath,
+        ];
+        const proc2 = spawn(bin, argsNoAudio);
+        let stderr2 = '';
+        proc2.stderr.on('data', d => { stderr2 += d.toString(); });
+        proc2.on('error', reject);
+        proc2.on('close', code2 => {
+          if (code2 !== 0) return reject(new Error('Remux gagal: ' + stderr2.slice(0, 200)));
+          console.log('  [REMUX] ✅ Clean (tanpa audio)');
+          resolve(false); // false = tidak ada audio
+        });
+        return;
       }
+      console.log('  [REMUX] ✅ Clean (dengan audio)');
+      resolve(true); // true = ada audio
     });
   });
 }
 
 /**
  * Build ffmpeg args for HDR conversion.
- * hasAudio = hasil probe — jika false, JANGAN map audio sama sekali.
- * Ini fix root cause dari "Decoder (codec none) not found for input stream #0:1"
+ * Dipanggil SETELAH remux — inputPath sudah dijamin bersih (hanya 1 video + max 1 audio).
+ * Tidak perlu -map eksplisit lagi karena containernya sudah clean.
  */
 function buildHdrFfmpegArgs(inputPath, outputPath, useZscale, hasAudio) {
-  // ── Audio args: hanya jika stream audio valid ─────────────────
   const audioArgs = hasAudio
     ? ['-c:a', 'aac', '-b:a', '192k', '-ar', '48000']
-    : ['-an']; // -an = no audio, skip seluruh audio pipeline
-
-  const mapArgs = hasAudio
-    ? ['-map', '0:v:0', '-map', '0:a:0']
-    : ['-map', '0:v:0'];
+    : ['-an'];
 
   if (useZscale) {
     // ── SDR → HDR10 (BT.2020 + PQ) ──────────────────────────────
@@ -424,7 +439,6 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale, hasAudio) {
 
     return [
       '-y', '-i', inputPath,
-      ...mapArgs,
       '-vf', vf,
       '-c:v', 'libx265',
       '-crf', '20',
@@ -448,7 +462,6 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale, hasAudio) {
 
     return [
       '-y', '-i', inputPath,
-      ...mapArgs,
       '-vf', vf,
       '-c:v', 'libx264',
       '-crf', '18',
@@ -562,28 +575,44 @@ function downloadSourceVideo(videoUrl, quality, uid) {
 
 /**
  * Run ffmpeg HDR conversion.
- * Probe audio dulu — jika codec audio 'none', skip audio sepenuhnya (-an).
- * Auto-retries with enhanced mode if HDR10 (zscale) fails.
+ * PIPELINE BARU:
+ *   1. remuxToClean()  → bersihkan container TikTok yang punya stream aneh
+ *   2. buildHdrFfmpegArgs() → konversi HDR dari file yang sudah bersih
+ *   3. Auto-retry ke HDR+ enhanced jika HDR10 (zscale) gagal
  */
 async function runHdrConversion(srcPath, hdrPath, attempt) {
-  // Probe hanya di attempt pertama, lalu pass hasAudio ke attempt berikutnya
-  // lewat closure. Tapi karena retry memanggil ulang, kita probe tiap kali —
-  // ffprobe sangat cepat (<1 detik) jadi tidak masalah.
-  const hasAudio = await probeHasValidAudio(srcPath);
-  console.log(`  [HDR-CONV] hasAudio=${hasAudio}`);
+  // Step 1: Remux hanya di attempt pertama
+  let cleanPath = srcPath;
+  let hasAudio = true;
+
+  if (attempt === 1) {
+    cleanPath = srcPath.replace('_src.mp4', '_clean.mp4');
+    try {
+      hasAudio = await remuxToClean(srcPath, cleanPath);
+    } catch (e) {
+      console.warn('  [REMUX] Gagal total, pakai file original:', e.message);
+      cleanPath = srcPath; // fallback ke file asli
+      hasAudio = false;
+    }
+  }
 
   return new Promise((resolve, reject) => {
     const useZscale = attempt === 1 && ZSCALE_AVAILABLE;
     const hdrLabel = useZscale ? 'HDR10' : 'HDR+';
-    const args = buildHdrFfmpegArgs(srcPath, hdrPath, useZscale, hasAudio);
+    const args = buildHdrFfmpegArgs(cleanPath, hdrPath, useZscale, hasAudio);
 
-    console.log(`  [HDR-CONV] Converting to ${hdrLabel} (attempt ${attempt})...`);
+    console.log(`  [HDR-CONV] Converting to ${hdrLabel} (attempt ${attempt}, hasAudio=${hasAudio})...`);
     const bin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
     const proc = spawn(bin, args);
     let stderr = '';
     proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('error', reject);
     proc.on('close', code => {
+      // Cleanup file clean sementara
+      if (cleanPath !== srcPath) {
+        try { fs.unlinkSync(cleanPath); } catch { }
+      }
+
       if (code !== 0) {
         if (attempt === 1 && ZSCALE_AVAILABLE) {
           console.warn('  [HDR-CONV] HDR10 gagal, coba HDR+ enhanced mode...');
