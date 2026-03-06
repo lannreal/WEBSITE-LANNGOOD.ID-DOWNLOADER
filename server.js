@@ -275,7 +275,13 @@ app.post('/api/info', requireYtDlp, (req, res) => {
   try { new URL(url); } catch { return res.status(400).json({ error: 'Format URL salah' }); }
 
   const safeUrl = url.replace(/["`]/g, '');
-  const cmd = `"${YTDLP_BIN}" --no-warnings --dump-json --no-playlist "${safeUrl}"`;
+
+  // TikTok bypass untuk info juga
+  const tiktokExtraInfo = safeUrl.includes('tiktok.com')
+    ? `--add-header "Referer:https://www.tiktok.com/" --add-header "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" --extractor-args "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com;app_version=35.1.3"`
+    : '';
+
+  const cmd = `"${YTDLP_BIN}" --no-warnings --dump-json --no-playlist ${tiktokExtraInfo} "${safeUrl}"`;
 
   exec(cmd, { timeout: 35000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) {
@@ -345,9 +351,15 @@ app.post('/api/download', requireYtDlp, (req, res) => {
     if (fmtStr) args.push('-f', fmtStr);
   }
 
-  // TikTok header
+  // TikTok — bypass datacenter IP block
   if (safeUrl.includes('tiktok.com')) {
-    args.push('--add-header', 'Referer:https://www.tiktok.com/');
+    args.push(
+      '--add-header', 'Referer:https://www.tiktok.com/',
+      '--add-header', 'User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+      '--add-header', 'Accept-Language:id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      '--extractor-args', 'tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com;app_version=35.1.3;manifest_app_version=2023501030;device_id=7318518857994389762',
+    );
   }
 
   args.push(safeUrl);
