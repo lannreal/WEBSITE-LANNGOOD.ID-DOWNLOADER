@@ -1,5 +1,5 @@
 /**
- * LANNGOOD.ID — Backend Server v3
+ * LANNGOOD.ID — Backend Server v3 + HDR+
  * Powered by yt-dlp | Node.js + Express
  * Compatible with Pterodactyl Panel
  */
@@ -57,8 +57,8 @@ function detectYtDlp() {
     '/usr/local/bin/yt-dlp',
     '/usr/bin/yt-dlp',
     '/home/container/yt-dlp',
-    '/root/.local/bin/yt-dlp',        // pip install --user
-    '/nix/var/nix/profiles/default/bin/yt-dlp',  // Railway Nix
+    '/root/.local/bin/yt-dlp',
+    '/nix/var/nix/profiles/default/bin/yt-dlp',
     '/usr/local/lib/python3.11/dist-packages/yt_dlp/__main__.py',
     'yt-dlp',
   ];
@@ -74,7 +74,6 @@ function detectYtDlp() {
     } catch { }
   }
 
-  // Try via python3 / python3.11
   const pythons = ['python3.11', 'python3', 'python'];
   for (const py of pythons) {
     try {
@@ -87,7 +86,6 @@ function detectYtDlp() {
     } catch { }
   }
 
-  // Try pip install
   const pips = ['pip', 'pip3', 'pip3.11', 'python3.11 -m pip', 'python3 -m pip'];
   for (const pip of pips) {
     try {
@@ -101,15 +99,11 @@ function detectYtDlp() {
   return false;
 }
 
-// Auto-download binary (Linux) — tanpa butuh python/pip
 function autoInstallYtDlp(cb) {
   if (os.platform() === 'win32') return cb(false);
   const dest = path.join(__dirname, 'yt-dlp');
   console.log('  ⬇  Downloading yt-dlp binary dari GitHub...');
-
-  // Hapus file lama kalau ada
   try { fs.unlinkSync(dest); } catch { }
-
   const file = fs.createWriteStream(dest);
   let finished = false;
 
@@ -117,14 +111,10 @@ function autoInstallYtDlp(cb) {
     if (redirectCount > 10) { file.close(); return cb(false); }
     const mod = url.startsWith('https') ? https : require('http');
     mod.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
-      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
+      if ([301, 302, 307, 308].includes(res.statusCode)) {
         return download(res.headers.location, redirectCount + 1);
       }
-      if (res.statusCode !== 200) {
-        file.close();
-        console.error('  ❌ Download gagal, status: ' + res.statusCode);
-        return cb(false);
-      }
+      if (res.statusCode !== 200) { file.close(); return cb(false); }
       res.pipe(file);
       file.on('finish', () => {
         if (finished) return;
@@ -133,22 +123,12 @@ function autoInstallYtDlp(cb) {
           try {
             execSync('chmod +x "' + dest + '"');
             const v = execSync('"' + dest + '" --version 2>&1', { timeout: 8000 }).toString().trim();
-            if (v && v.length > 0) {
-              YTDLP_BIN = dest; YTDLP_VERSION = v;
-              console.log('  ✅ yt-dlp berhasil didownload! v' + v);
-              return cb(true);
-            }
+            if (v && v.length > 0) { YTDLP_BIN = dest; YTDLP_VERSION = v; return cb(true); }
             cb(false);
-          } catch (e) {
-            console.error('  ❌ yt-dlp tidak bisa dijalankan:', e.message);
-            cb(false);
-          }
+          } catch (e) { cb(false); }
         });
       });
-    }).on('error', e => {
-      console.error('  ❌ Download error:', e.message);
-      cb(false);
-    });
+    }).on('error', () => cb(false));
   }
   download('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', 0);
 }
@@ -157,10 +137,9 @@ function autoInstallYtDlp(cb) {
 
 let FFMPEG_AVAILABLE = false;
 let FFMPEG_PATH = 'ffmpeg';
-let FFMPEG_DIR = '';  // folder ffmpeg untuk --ffmpeg-location
+let FFMPEG_DIR = '';
 
 function detectFfmpeg() {
-  // Cek kandidat — prioritaskan yang ada di folder project (Windows-friendly)
   const candidates = [
     path.join(__dirname, 'ffmpeg.exe'),
     path.join(__dirname, 'ffmpeg'),
@@ -168,7 +147,7 @@ function detectFfmpeg() {
     path.join(__dirname, 'bin', 'ffmpeg'),
     '/usr/local/bin/ffmpeg',
     '/usr/bin/ffmpeg',
-    '/nix/var/nix/profiles/default/bin/ffmpeg',  // Railway Nix
+    '/nix/var/nix/profiles/default/bin/ffmpeg',
     'ffmpeg',
   ];
 
@@ -178,35 +157,59 @@ function detectFfmpeg() {
       if (!vOut.includes('ffmpeg version')) continue;
       FFMPEG_AVAILABLE = true;
       FFMPEG_PATH = bin;
-      // --ffmpeg-location = FOLDER tempat ffmpeg.exe berada (bukan path file-nya!)
       FFMPEG_DIR = path.dirname(path.resolve(bin));
       console.log(`  ✅ ffmpeg: ${path.resolve(bin)}`);
-      console.log(`  📁 ffmpeg dir: ${FFMPEG_DIR}`);
       return true;
     } catch { }
   }
 
-  // Coba via PATH tanpa path absolut
   try {
     const vOut = execSync('ffmpeg -version 2>&1', { timeout: 5000 }).toString();
     if (vOut.includes('ffmpeg version')) {
       FFMPEG_AVAILABLE = true;
       FFMPEG_PATH = 'ffmpeg';
-      FFMPEG_DIR = '';   // biarkan yt-dlp temukan sendiri via PATH
+      FFMPEG_DIR = '';
       console.log('  ✅ ffmpeg ditemukan di PATH');
       return true;
     }
   } catch { }
 
   console.warn('  ⚠  ffmpeg tidak ditemukan!');
-  console.warn(`     Taruh ffmpeg.exe di: ${__dirname}`);
   return false;
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  HDR+ — zscale / libzimg detection & conversion
+// ══════════════════════════════════════════════════════════════════
+
+let ZSCALE_AVAILABLE = false;
+let HDR_TYPE = 'none'; // 'HDR10' | 'HDR+' | 'none'
+
+function detectZscale() {
+  if (!FFMPEG_AVAILABLE) {
+    console.warn('  ⚠  HDR+ tidak tersedia (ffmpeg tidak ada)');
+    return;
+  }
+  try {
+    const bin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : `"${FFMPEG_PATH}"`;
+    const filters = execSync(`${bin} -filters 2>&1`, { timeout: 8000 }).toString();
+    ZSCALE_AVAILABLE = filters.includes('zscale');
+    if (ZSCALE_AVAILABLE) {
+      HDR_TYPE = 'HDR10';
+      console.log('  ✅ zscale (libzimg): tersedia → mode HDR10 (SMPTE ST 2084 / PQ)');
+    } else {
+      HDR_TYPE = 'HDR+';
+      console.log('  ⚠  zscale tidak ditemukan → mode HDR+ (enhanced SDR)');
+    }
+  } catch {
+    HDR_TYPE = 'HDR+';
+    console.warn('  ⚠  Tidak bisa cek zscale, pakai HDR+ enhanced mode');
+  }
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────
 
 function sanitize(name) {
-  // Strip non-ASCII (emoji, unicode) dan karakter ilegal HTTP header
   return (name || '')
     .replace(/[^\x20-\x7E]/g, '_')
     .replace(/[\/\\:*?"<>|]/g, '_')
@@ -245,7 +248,7 @@ setInterval(cleanupOld, 10 * 60 * 1000);
 //  TIKWM API — khusus TikTok (bypass datacenter block)
 // ══════════════════════════════════════════════════════════════════
 
-async function tikwmGetInfo(videoUrl) {
+function downloadTikTokViaTikwm(videoUrl) {
   return new Promise((resolve, reject) => {
     const postData = `url=${encodeURIComponent(videoUrl)}&hd=1`;
     const options = {
@@ -259,105 +262,16 @@ async function tikwmGetInfo(videoUrl) {
         'Referer': 'https://www.tikwm.com/',
       },
     };
-    const req = https.request(options, res => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          if (json.code === 0 && json.data) resolve(json.data);
-          else reject(new Error(json.msg || 'TikWM API error'));
-        } catch { reject(new Error('TikWM parse error')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('TikWM timeout')); });
-    req.write(postData);
-    req.end();
-  });
-}
-
-async function tikwmDownload(videoUrl, audioOnly) {
-  const data = await tikwmGetInfo(videoUrl);
-  // Pilih URL: no-watermark video atau audio
-  const dlUrl = audioOnly
-    ? (data.music_info?.play || data.hdplay || data.play)
-    : (data.hdplay || data.play);
-  if (!dlUrl) throw new Error('URL video tidak ditemukan dari TikWM');
-  return {
-    downloadUrl: dlUrl,
-    title: data.title || 'tiktok_video',
-    author: data.author?.nickname || '',
-    thumbnail: data.cover || '',
-    isAudio: audioOnly,
-  };
-}
-
-// Stream download dari URL eksternal ke client
-function streamFromUrl(externalUrl, filename, mimeType, res, redirectCount = 0) {
-  if (redirectCount > 10) return res.status(500).json({ error: 'Terlalu banyak redirect' });
-  const mod = externalUrl.startsWith('https') ? https : require('http');
-  mod.get(externalUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-      'Referer': 'https://www.tiktok.com/',
-    }
-  }, proxyRes => {
-    if (proxyRes.statusCode === 301 || proxyRes.statusCode === 302 || proxyRes.statusCode === 307) {
-      return streamFromUrl(proxyRes.headers.location, filename, mimeType, res, redirectCount + 1);
-    }
-    if (proxyRes.statusCode !== 200) {
-      return res.status(500).json({ error: 'Gagal stream dari server TikTok: ' + proxyRes.statusCode });
-    }
-    const safeFilename = sanitize(filename) || 'tiktok_video';
-    const encodedName = encodeURIComponent(safeFilename);
-    res.setHeader('Content-Type', mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodedName}`);
-    if (proxyRes.headers['content-length']) {
-      res.setHeader('Content-Length', proxyRes.headers['content-length']);
-    }
-    proxyRes.pipe(res);
-    res.on('close', () => proxyRes.destroy());
-  }).on('error', err => {
-    if (!res.headersSent) res.status(500).json({ error: 'Stream error: ' + err.message });
-  });
-}
-
-// ══════════════════════════════════════════════════════════════════
-//  TIKWM API — Khusus TikTok (bypass datacenter block)
-//  Free, tanpa key, bisa dari server manapun
-// ══════════════════════════════════════════════════════════════════
-
-function downloadTikTokViaTikwm(videoUrl, res) {
-  return new Promise((resolve, reject) => {
-    const postData = `url=${encodeURIComponent(videoUrl)}&hd=1`;
-
-    const options = {
-      hostname: 'www.tikwm.com',
-      path: '/api/',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postData),
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.tikwm.com/',
-      },
-    };
-
     const req = https.request(options, apiRes => {
       let body = '';
       apiRes.on('data', d => body += d);
       apiRes.on('end', () => {
         try {
           const data = JSON.parse(body);
-          if (data.code !== 0 || !data.data) {
-            return reject(new Error(data.msg || 'TikWM API gagal'));
-          }
+          if (data.code !== 0 || !data.data) return reject(new Error(data.msg || 'TikWM API gagal'));
           const info = data.data;
-          // Pilih URL: HD dulu, lalu play (no watermark), lalu wmplay (watermark)
           const videoUrlResult = info.hdplay || info.play || info.wmplay;
           if (!videoUrlResult) return reject(new Error('URL video tidak ditemukan'));
-
           resolve({
             downloadUrl: videoUrlResult,
             title: info.title || 'tiktok_video',
@@ -365,12 +279,9 @@ function downloadTikTokViaTikwm(videoUrl, res) {
             thumbnail: info.cover || '',
             duration: info.duration || 0,
           });
-        } catch (e) {
-          reject(new Error('Parse TikWM response gagal: ' + e.message));
-        }
+        } catch (e) { reject(new Error('Parse TikWM response gagal: ' + e.message)); }
       });
     });
-
     req.on('error', e => reject(new Error('TikWM request error: ' + e.message)));
     req.setTimeout(15000, () => { req.destroy(); reject(new Error('TikWM timeout')); });
     req.write(postData);
@@ -378,11 +289,9 @@ function downloadTikTokViaTikwm(videoUrl, res) {
   });
 }
 
-// Proxy TikTok video URL ke client (stream langsung)
 function streamTikTokUrl(sourceUrl, filename, res) {
   const urlObj = new URL(sourceUrl);
   const mod = sourceUrl.startsWith('https') ? https : require('http');
-
   const options = {
     hostname: urlObj.hostname,
     path: urlObj.pathname + urlObj.search,
@@ -392,24 +301,19 @@ function streamTikTokUrl(sourceUrl, filename, res) {
       'Referer': 'https://www.tiktok.com/',
     },
   };
-
   mod.get(options, streamRes => {
-    if (streamRes.statusCode === 301 || streamRes.statusCode === 302 || streamRes.statusCode === 307) {
+    if ([301, 302, 307].includes(streamRes.statusCode)) {
       return streamTikTokUrl(streamRes.headers.location, filename, res);
     }
     if (streamRes.statusCode !== 200) {
       if (!res.headersSent) res.status(502).json({ error: 'Gagal stream video dari TikTok' });
       return;
     }
-
     const safeName = sanitize(filename) + '.mp4';
     const encodedName = encodeURIComponent(safeName);
-
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`);
-    if (streamRes.headers['content-length']) {
-      res.setHeader('Content-Length', streamRes.headers['content-length']);
-    }
+    if (streamRes.headers['content-length']) res.setHeader('Content-Length', streamRes.headers['content-length']);
     streamRes.pipe(res);
     streamRes.on('error', () => { if (!res.headersSent) res.status(500).end(); });
   }).on('error', e => {
@@ -417,12 +321,202 @@ function streamTikTokUrl(sourceUrl, filename, res) {
   });
 }
 
-function requireYtDlp(req, res, next) {
-  if (YTDLP_BIN) return next();
-  res.status(503).json({
-    error: 'yt-dlp belum terinstall',
-    ytdlp_missing: true,
-    hint: 'pip install yt-dlp',
+// ── Helper: download TikTok URL to local file (for HDR pipeline) ─
+function downloadTikTokToFile(downloadUrl, destPath) {
+  return new Promise((resolve, reject) => {
+    function fetch(url, redirects) {
+      if (redirects > 10) return reject(new Error('Too many redirects'));
+      const mod = url.startsWith('https') ? https : require('http');
+      mod.get(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+          'Referer': 'https://www.tiktok.com/',
+        },
+      }, res => {
+        if ([301, 302, 307, 308].includes(res.statusCode)) {
+          return fetch(res.headers.location, redirects + 1);
+        }
+        if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
+        const file = fs.createWriteStream(destPath);
+        res.pipe(file);
+        file.on('finish', () => file.close(resolve));
+        file.on('error', reject);
+      }).on('error', reject);
+    }
+    fetch(downloadUrl, 0);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  HDR+ CONVERSION ENGINE
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * Build ffmpeg args for HDR conversion.
+ * - If zscale available: full HDR10 (BT.2020 + PQ transfer / SMPTE ST 2084)
+ * - Otherwise: enhanced SDR (higher contrast, saturation, sharpness)
+ */
+function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
+  if (useZscale) {
+    // Full HDR10 pipeline
+    const vf = [
+      'zscale=t=linear:npl=100',
+      'format=gbrpf32le',
+      'zscale=p=bt2020',
+      'tonemap=tonemap=hable:desat=0:peak=1000',
+      'zscale=t=smpte2084:m=bt2020nc:r=tv',
+      'format=yuv420p10le',
+    ].join(',');
+
+    return [
+      '-y', '-i', inputPath,
+      '-vf', vf,
+      '-c:v', 'libx265',
+      '-crf', '20',
+      '-preset', 'fast',
+      '-x265-params',
+      'hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc' +
+      ':master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50000)' +
+      ':max-cll=1000,400',
+      '-tag:v', 'hvc1',
+      '-movflags', '+faststart',
+      '-c:a', 'copy',
+      outputPath,
+    ];
+  } else {
+    // HDR+ enhanced mode (no zscale needed)
+    const vf = [
+      'eq=contrast=1.15:brightness=0.03:saturation=1.32:gamma=0.88',
+      'unsharp=5:5:0.5:3:3:0.2',
+    ].join(',');
+
+    return [
+      '-y', '-i', inputPath,
+      '-vf', vf,
+      '-c:v', 'libx264',
+      '-crf', '18',
+      '-preset', 'fast',
+      '-movflags', '+faststart',
+      '-c:a', 'copy',
+      outputPath,
+    ];
+  }
+}
+
+/**
+ * Download source video to a temp file using yt-dlp or TikWM.
+ * Returns { srcPath, title }
+ */
+function downloadSourceVideo(videoUrl, quality, uid) {
+  return new Promise((resolve, reject) => {
+    const safeUrl = videoUrl.replace(/["`]/g, '');
+
+    // TikTok → TikWM (bypass datacenter block)
+    if (safeUrl.includes('tiktok.com')) {
+      const srcPath = path.join(TEMP_DIR, `${uid}_src.mp4`);
+      downloadTikTokViaTikwm(safeUrl)
+        .then(info => {
+          console.log(`  [HDR-DL] TikWM: ${info.downloadUrl.slice(0, 70)}...`);
+          downloadTikTokToFile(info.downloadUrl, srcPath)
+            .then(() => resolve({ srcPath, title: info.title || 'tiktok_video' }))
+            .catch(reject);
+        })
+        .catch(reject);
+      return;
+    }
+
+    // yt-dlp for all other platforms
+    if (!YTDLP_BIN) return reject(new Error('yt-dlp tidak tersedia'));
+
+    const q = quality && quality !== 'best' ? quality : null;
+    const fmtStr = q
+      ? `bestvideo[ext=mp4][height<=${q}]+bestaudio[ext=m4a]/bestvideo[height<=${q}]+bestaudio/best[height<=${q}]/best`
+      : 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
+
+    const outTpl = path.join(TEMP_DIR, `${uid}_src_%(title).55s.%(ext)s`);
+    const args = [
+      '--no-warnings', '--no-playlist', '--no-progress',
+      '-f', fmtStr,
+      '--merge-output-format', 'mp4',
+      '-o', outTpl,
+      safeUrl,
+    ];
+
+    let spawnCmd = YTDLP_BIN;
+    let spawnArgs = args;
+    if (YTDLP_BIN.startsWith('python3')) {
+      spawnCmd = 'python3';
+      spawnArgs = ['-m', 'yt_dlp', ...args];
+    }
+
+    console.log(`  [HDR-DL] yt-dlp download...`);
+    const proc = spawn(spawnCmd, spawnArgs);
+    let stderr = '';
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', reject);
+    proc.on('close', code => {
+      if (code !== 0) {
+        const msg = stderr.toLowerCase();
+        let errText = 'Download gagal';
+        if (msg.includes('unsupported url')) errText = 'URL tidak didukung';
+        else if (msg.includes('private')) errText = 'Video bersifat privat';
+        else if (msg.includes('geo')) errText = 'Video dibatasi wilayah';
+        else if (msg.includes('404')) errText = 'Video tidak ditemukan';
+        return reject(new Error(errText));
+      }
+
+      const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(`${uid}_src`));
+      if (!files.length) return reject(new Error('File download tidak ditemukan'));
+
+      const dlFile = path.join(TEMP_DIR, files[0]);
+      const rawName = files[0].replace(`${uid}_src_`, '').replace(/\.[^.]+$/, '');
+      const srcPath = path.join(TEMP_DIR, `${uid}_src.mp4`);
+
+      // Rename/copy to standard srcPath
+      try {
+        fs.renameSync(dlFile, srcPath);
+      } catch {
+        try { fs.copyFileSync(dlFile, srcPath); fs.unlinkSync(dlFile); } catch { }
+      }
+
+      resolve({ srcPath, title: rawName || 'video' });
+    });
+  });
+}
+
+/**
+ * Run ffmpeg HDR conversion.
+ * Auto-retries with enhanced mode if HDR10 (zscale) fails.
+ */
+function runHdrConversion(srcPath, hdrPath, attempt) {
+  return new Promise((resolve, reject) => {
+    const useZscale = attempt === 1 && ZSCALE_AVAILABLE;
+    const hdrLabel = useZscale ? 'HDR10' : 'HDR+';
+    const args = buildHdrFfmpegArgs(srcPath, hdrPath, useZscale);
+
+    if (FFMPEG_DIR && !useZscale) {
+      // nothing special
+    }
+
+    console.log(`  [HDR-CONV] Converting to ${hdrLabel} (attempt ${attempt})...`);
+    const bin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
+    const proc = spawn(bin, args);
+    let stderr = '';
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', reject);
+    proc.on('close', code => {
+      if (code !== 0) {
+        if (attempt === 1 && ZSCALE_AVAILABLE) {
+          // HDR10 failed — try enhanced fallback
+          console.warn('  [HDR-CONV] HDR10 gagal, coba HDR+ enhanced mode...');
+          return runHdrConversion(srcPath, hdrPath, 2).then(resolve).catch(reject);
+        }
+        // Both failed
+        console.error('  [HDR-CONV] stderr:', stderr.slice(0, 400));
+        return reject(new Error('Konversi HDR gagal: ' + stderr.slice(0, 200)));
+      }
+      resolve(useZscale ? 'HDR10' : 'HDR+');
+    });
   });
 }
 
@@ -432,9 +526,12 @@ function requireYtDlp(req, res, next) {
 
 app.get('/api/health', (req, res) => res.json({
   status: 'ok',
-  service: 'LANNGOOD.ID v3',
+  service: 'LANNGOOD.ID v3 + HDR+',
   ytdlp: YTDLP_BIN ? `ready (${YTDLP_VERSION})` : 'NOT FOUND',
   ytdlp_ready: !!YTDLP_BIN,
+  ffmpeg_ready: FFMPEG_AVAILABLE,
+  hdr_ready: FFMPEG_AVAILABLE,
+  hdr_type: HDR_TYPE,
   uptime: Math.floor(process.uptime()),
 }));
 
@@ -442,6 +539,8 @@ app.get('/api/status', (req, res) => res.json({
   ytdlp_ready: !!YTDLP_BIN,
   version: YTDLP_VERSION,
   ffmpeg_ready: FFMPEG_AVAILABLE,
+  hdr_ready: FFMPEG_AVAILABLE,
+  hdr_type: HDR_TYPE, // 'HDR10' | 'HDR+' | 'none'
 }));
 
 // ── GET VIDEO INFO ────────────────────────────────────────────────
@@ -452,33 +551,21 @@ app.post('/api/info', (req, res) => {
 
   const safeUrl = url.replace(/["`]/g, '');
 
-  // TikTok → pakai TikWM API (bypass datacenter block)
   if (safeUrl.includes('tiktok.com')) {
     return downloadTikTokViaTikwm(safeUrl)
-      .then(info => res.json({
-        title: info.title || 'TikTok Video',
-        uploader: info.author || '',
-        thumbnail: info.thumbnail || '',
-      }))
-      .catch(err => {
-        console.error('[TIKWM INFO ERR]', err.message);
-        res.json({ title: 'TikTok Video', uploader: '', thumbnail: '' });
-      });
+      .then(info => res.json({ title: info.title || 'TikTok Video', uploader: info.author || '', thumbnail: info.thumbnail || '' }))
+      .catch(() => res.json({ title: 'TikTok Video', uploader: '', thumbnail: '' }));
   }
 
-  // Platform lain → yt-dlp
   if (!YTDLP_BIN) return res.status(503).json({ error: 'yt-dlp tidak tersedia', ytdlp_missing: true });
 
   const cmd = `"${YTDLP_BIN}" --no-warnings --dump-json --no-playlist "${safeUrl}"`;
   exec(cmd, { timeout: 35000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) {
       const msg = (stderr || err.message || '').toLowerCase();
-      if (msg.includes('unsupported url') || msg.includes('not supported'))
-        return res.status(400).json({ error: 'URL tidak didukung' });
-      if (msg.includes('private'))
-        return res.status(400).json({ error: 'Video bersifat privat' });
-      if (msg.includes('404') || msg.includes('not found'))
-        return res.status(404).json({ error: 'Video tidak ditemukan' });
+      if (msg.includes('unsupported url')) return res.status(400).json({ error: 'URL tidak didukung' });
+      if (msg.includes('private')) return res.status(400).json({ error: 'Video bersifat privat' });
+      if (msg.includes('404')) return res.status(404).json({ error: 'Video tidak ditemukan' });
       return res.status(500).json({ error: (stderr || err.message).slice(0, 200) });
     }
     try {
@@ -490,7 +577,7 @@ app.post('/api/info', (req, res) => {
   });
 });
 
-// ── DOWNLOAD VIDEO ────────────────────────────────────────────────
+// ── DOWNLOAD VIDEO (normal) ───────────────────────────────────────
 app.post('/api/download', (req, res) => {
   const { url, format = 'mp4', quality = 'best' } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
@@ -498,23 +585,19 @@ app.post('/api/download', (req, res) => {
 
   const safeUrlCheck = url.replace(/["`]/g, '');
 
-  // TikTok → TikWM API (bypass datacenter IP block)
   if (safeUrlCheck.includes('tiktok.com')) {
     console.log('[TIKWM] Menggunakan TikWM API untuk TikTok...');
     downloadTikTokViaTikwm(safeUrlCheck)
       .then(info => {
         const filename = sanitize(info.title || 'tiktok_video');
-        console.log('[TIKWM DL] Streaming:', info.downloadUrl.slice(0, 80));
         streamTikTokUrl(info.downloadUrl, filename, res);
       })
       .catch(err => {
-        console.error('[TIKWM ERR]', err.message);
         if (!res.headersSent) res.status(500).json({ error: 'TikTok download gagal: ' + err.message });
       });
     return;
   }
 
-  // Cek yt-dlp untuk platform lain
   if (!YTDLP_BIN) return res.status(503).json({ error: 'yt-dlp tidak tersedia', ytdlp_missing: true });
 
   cleanupOld();
@@ -524,24 +607,16 @@ app.post('/api/download', (req, res) => {
   const safeUrl = url.replace(/["`]/g, '');
   const fmtStr = buildFormatStr(format, quality);
 
-  // Build args berbeda untuk MP3 vs video
   let args;
-
   if (format === 'mp3') {
     if (FFMPEG_AVAILABLE) {
-      // ffmpeg ada — convert langsung ke MP3
       args = [
         '--no-warnings', '--no-playlist', '--no-progress',
-        '--extract-audio',
-        '--audio-format', 'mp3',
-        '--audio-quality', '192K',
-        // --ffmpeg-location = direktori tempat ffmpeg.exe (BUKAN path file-nya)
+        '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '192K',
         ...(FFMPEG_DIR !== '' ? ['--ffmpeg-location', FFMPEG_DIR] : []),
         '-o', outTpl,
       ];
     } else {
-      // ffmpeg tidak ada — download audio native terbaik (m4a/aac)
-      // m4a bisa langsung diputar di semua browser & device
       args = [
         '--no-warnings', '--no-playlist', '--no-progress',
         '-f', 'bestaudio[ext=m4a]/bestaudio[ext=aac]/bestaudio/best',
@@ -549,7 +624,6 @@ app.post('/api/download', (req, res) => {
       ];
     }
   } else {
-    // Mode video
     const mergeExt = format === 'webm' ? 'webm' : (format === 'best' ? 'mkv' : 'mp4');
     args = [
       '--no-warnings', '--no-playlist', '--no-progress',
@@ -559,26 +633,13 @@ app.post('/api/download', (req, res) => {
     if (fmtStr) args.push('-f', fmtStr);
   }
 
-  // TikTok — bypass datacenter IP block
-  if (safeUrl.includes('tiktok.com')) {
-    args.push(
-      '--add-header', 'Referer:https://www.tiktok.com/',
-      '--add-header', 'User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-      '--add-header', 'Accept-Language:id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      '--extractor-args', 'tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com;app_version=35.1.3;manifest_app_version=2023501030;device_id=7318518857994389762',
-    );
-  }
-
   args.push(safeUrl);
 
-  let spawnCmd, spawnArgs;
+  let spawnCmd = YTDLP_BIN;
+  let spawnArgs = args;
   if (YTDLP_BIN.startsWith('python3')) {
     spawnCmd = 'python3';
     spawnArgs = ['-m', 'yt_dlp', ...args];
-  } else {
-    spawnCmd = YTDLP_BIN;
-    spawnArgs = args;
   }
 
   console.log(`[DL] ${spawnCmd} ${spawnArgs.slice(0, 4).join(' ')} ...`);
@@ -589,7 +650,6 @@ app.post('/api/download', (req, res) => {
   proc.stdout.on('data', () => { });
 
   proc.on('error', err => {
-    console.error('[SPAWN ERR]', err.message);
     if (!res.headersSent) res.status(500).json({ error: 'Gagal menjalankan yt-dlp: ' + err.message });
   });
 
@@ -602,9 +662,7 @@ app.post('/api/download', (req, res) => {
         else if (msg.includes('private')) errText = 'Video bersifat privat';
         else if (msg.includes('geo')) errText = 'Video dibatasi wilayah';
         else if (msg.includes('404')) errText = 'Video tidak ditemukan';
-        else if (msg.includes('ffmpeg')) errText = 'ffmpeg tidak ditemukan di server — install ffmpeg dulu';
-        else if (msg.includes('postprocessor')) errText = 'Konversi audio gagal — ffmpeg diperlukan';
-        console.error('[STDERR]', stderr.slice(0, 400));
+        else if (msg.includes('ffmpeg')) errText = 'ffmpeg tidak ditemukan di server';
         return res.status(500).json({ error: errText, detail: stderr.slice(0, 300) });
       }
       return;
@@ -617,35 +675,25 @@ app.post('/api/download', (req, res) => {
     }
 
     const filePath = path.join(TEMP_DIR, files[0]);
-    // ext dari file aktual (bisa mp3, m4a, mp4, dll)
     let ext = path.extname(files[0]).replace('.', '').toLowerCase();
     if (!ext) ext = format === 'mp3' ? 'mp3' : 'mp4';
 
-    // Untuk MP3 request: paksa nama file berakhiran .mp3
     const rawName = files[0].replace(`${uid}_`, '');
-    const baseName = rawName.replace(/\.[^.]+$/, '');   // hapus extension lama
-    // Tentukan extension final
+    const baseName = rawName.replace(/\.[^.]+$/, '');
     let finalExt;
-    if (format === 'mp3' && FFMPEG_AVAILABLE) {
-      finalExt = 'mp3';
-    } else if (format === 'mp3' && !FFMPEG_AVAILABLE) {
-      // Tanpa ffmpeg: file adalah audio native (m4a/aac/webm)
-      finalExt = ext || 'm4a';
-    } else {
-      finalExt = ext || format;
-    }
-    const safeName = (sanitize(baseName) || 'lanngood_video') + '.' + finalExt;
+    if (format === 'mp3' && FFMPEG_AVAILABLE) finalExt = 'mp3';
+    else if (format === 'mp3' && !FFMPEG_AVAILABLE) finalExt = ext || 'm4a';
+    else finalExt = ext || format;
 
+    const safeName = (sanitize(baseName) || 'lanngood_video') + '.' + finalExt;
     const MIME = {
       mp4: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska',
       mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', opus: 'audio/opus',
     };
 
-    // Tambah header info format aktual (berguna untuk frontend)
     res.setHeader('X-Actual-Format', finalExt);
     res.setHeader('X-Ffmpeg-Available', FFMPEG_AVAILABLE ? 'true' : 'false');
     res.setHeader('Content-Type', MIME[finalExt] || MIME[ext] || 'application/octet-stream');
-    // Encode filename for Content-Disposition (RFC 5987) — prevents ERR_INVALID_CHAR
     const encodedName = encodeURIComponent(safeName).replace(/[()]/g, escape);
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`);
     res.setHeader('Content-Length', fs.statSync(filePath).size);
@@ -658,6 +706,93 @@ app.post('/api/download', (req, res) => {
   });
 });
 
+// ── HDR+ CONVERSION ENDPOINT ──────────────────────────────────────
+app.post('/api/hdr', async (req, res) => {
+  const { url, quality = 'best' } = req.body;
+
+  if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
+  try { new URL(url); } catch { return res.status(400).json({ error: 'Format URL salah' }); }
+  if (!FFMPEG_AVAILABLE) {
+    return res.status(503).json({
+      error: 'FFmpeg tidak tersedia di server. HDR+ membutuhkan ffmpeg untuk konversi.',
+    });
+  }
+
+  cleanupOld();
+
+  const uid = crypto.randomBytes(8).toString('hex');
+  const hdrPath = path.join(TEMP_DIR, `${uid}_hdr.mp4`);
+  let srcPath = null;
+
+  const cleanup = () => {
+    setTimeout(() => {
+      [srcPath, hdrPath].forEach(f => {
+        if (f) try { fs.unlinkSync(f); } catch { }
+      });
+      // Clean any leftover yt-dlp pattern files
+      try {
+        fs.readdirSync(TEMP_DIR)
+          .filter(f => f.startsWith(uid))
+          .forEach(f => { try { fs.unlinkSync(path.join(TEMP_DIR, f)); } catch { } });
+      } catch { }
+    }, 8000);
+  };
+
+  console.log(`[HDR+] Request: ${url.slice(0, 80)} quality=${quality}`);
+
+  try {
+    // Step 1 — Download source video
+    const { srcPath: sp, title } = await downloadSourceVideo(url, quality, uid);
+    srcPath = sp;
+
+    if (!fs.existsSync(srcPath) || fs.statSync(srcPath).size === 0) {
+      throw new Error('File video sumber kosong atau tidak ditemukan');
+    }
+
+    console.log(`  [HDR+] Source downloaded: ${(fs.statSync(srcPath).size / 1024 / 1024).toFixed(1)} MB — "${title}"`);
+
+    // Step 2 — HDR conversion
+    const hdrLabel = await runHdrConversion(srcPath, hdrPath, 1);
+
+    if (!fs.existsSync(hdrPath) || fs.statSync(hdrPath).size === 0) {
+      throw new Error('File HDR tidak terbuat');
+    }
+
+    const fileSizeMB = (fs.statSync(hdrPath).size / 1024 / 1024).toFixed(1);
+    console.log(`  [HDR+] Done! ${hdrLabel} — ${fileSizeMB} MB — "${title}"`);
+
+    // Step 3 — Stream result to client
+    const safeTitle = sanitize(title) || 'lanngood_hdr';
+    const suffix = hdrLabel === 'HDR10' ? 'HDR10' : 'HDRplus';
+    const filename = `${safeTitle}_${suffix}.mp4`;
+    const encodedName = encodeURIComponent(filename);
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encodedName}`);
+    res.setHeader('Content-Length', fs.statSync(hdrPath).size);
+    res.setHeader('X-HDR-Type', hdrLabel);
+    res.setHeader('X-HDR-Source-Size', fs.statSync(srcPath).size);
+
+    const stream = fs.createReadStream(hdrPath);
+    stream.pipe(res);
+    stream.on('end', cleanup);
+    stream.on('error', (err) => {
+      console.error('[HDR+] Stream error:', err.message);
+      if (!res.headersSent) res.status(500).json({ error: 'Stream error' });
+      cleanup();
+    });
+    res.on('close', cleanup);
+
+  } catch (err) {
+    cleanup();
+    console.error('[HDR+ ERR]', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'HDR+ conversion gagal' });
+    }
+  }
+});
+
+// ── 404 / Error handlers ─────────────────────────────────────────
 app.use((req, res) => res.status(404).json({ error: 'Tidak ditemukan' }));
 app.use((err, req, res, next) => {
   console.error('[ERR]', err);
@@ -668,12 +803,14 @@ app.use((err, req, res, next) => {
 //  STARTUP
 // ══════════════════════════════════════════════════════════════════
 (async function start() {
-  console.log(`\n  ╔═══════════════════════════════╗`);
-  console.log(`  ║  LANNGOOD.ID Server v3        ║`);
-  console.log(`  ╚═══════════════════════════════╝`);
+  console.log(`\n  ╔════════════════════════════════════╗`);
+  console.log(`  ║   LANNGOOD.ID Server v3 + HDR+     ║`);
+  console.log(`  ╚════════════════════════════════════╝`);
 
   const found = detectYtDlp();
   detectFfmpeg();
+  detectZscale(); // Check for libzimg/zscale (HDR10 support)
+
   if (!found) {
     console.log('  🔄 Mencoba auto-install yt-dlp...');
     await new Promise(resolve => autoInstallYtDlp(ok => {
@@ -684,7 +821,9 @@ app.use((err, req, res, next) => {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n  🚀 http://0.0.0.0:${PORT}`);
-    console.log(`  📦 yt-dlp: ${YTDLP_BIN ? '✅ ' + YTDLP_VERSION : '❌ tidak ditemukan'}\n`);
+    console.log(`  📦 yt-dlp  : ${YTDLP_BIN ? '✅ ' + YTDLP_VERSION : '❌ tidak ditemukan'}`);
+    console.log(`  🎬 ffmpeg  : ${FFMPEG_AVAILABLE ? '✅' : '❌ tidak ditemukan'}`);
+    console.log(`  ✨ HDR+    : ${HDR_TYPE === 'none' ? '❌ tidak tersedia' : '✅ ' + HDR_TYPE}\n`);
   });
 })();
 
