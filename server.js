@@ -353,18 +353,30 @@ function downloadTikTokToFile(downloadUrl, destPath) {
 
 /**
  * Build ffmpeg args for HDR conversion.
- * - If zscale available: full HDR10 (BT.2020 + PQ transfer / SMPTE ST 2084)
- * - Otherwise: enhanced SDR (higher contrast, saturation, sharpness)
+ *
+ * Mode HDR10 (zscale tersedia):
+ *   SDR → linear light → BT.2020 gamut → PQ/SMPTE ST 2084 transfer
+ *   CATATAN: JANGAN pakai `tonemap` di sini — filter itu untuk arah HDR→SDR,
+ *   bukan SDR→HDR. Pakai `tonemap` di pipeline ini justru memotong highlight
+ *   dan membuat video jauh lebih gelap.
+ *
+ * Mode HDR+ Enhanced (tanpa zscale):
+ *   gamma > 1.0 = lebih terang (gamma < 1.0 = lebih gelap — bug sebelumnya).
+ *   Gunakan curves untuk angkat shadow + boost highlight secara proporsional.
  */
 function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
   if (useZscale) {
-    // Full HDR10 pipeline
+    // ── SDR → HDR10 (BT.2020 + PQ) ──────────────────────────────
+    // Pipeline:
+    //  1. Konversi ke ruang linear (npl=100 = peak brightness SDR sumber)
+    //  2. Pindah ke format float 32-bit agar presisi tidak hilang
+    //  3. Ubah primaries ke BT.2020, transfer ke smpte2084 (PQ), matrix bt2020nc
+    //     npl=1000 = target peak brightness HDR (1000 nit)
+    //  4. Output ke 10-bit YUV420
     const vf = [
       'zscale=t=linear:npl=100',
       'format=gbrpf32le',
-      'zscale=p=bt2020',
-      'tonemap=tonemap=hable:desat=0:peak=1000',
-      'zscale=t=smpte2084:m=bt2020nc:r=tv',
+      'zscale=p=bt2020:t=smpte2084:m=bt2020nc:r=tv:npl=1000',
       'format=yuv420p10le',
     ].join(',');
 
@@ -384,10 +396,14 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
       outputPath,
     ];
   } else {
-    // HDR+ enhanced mode (no zscale needed)
+    // ── HDR+ Enhanced (tanpa zscale) ─────────────────────────────
+    // gamma > 1.0 = terangkan midtone (BUKAN < 1.0 yang malah menggelapkan)
+    // curves: angkat shadow halus + jaga highlight tidak clipping
+    // unsharp ringan: tambah clarity tanpa artefak
     const vf = [
-      'eq=contrast=1.15:brightness=0.03:saturation=1.32:gamma=0.88',
-      'unsharp=5:5:0.5:3:3:0.2',
+      'eq=gamma=1.2:contrast=1.08:brightness=0.03:saturation=1.25',
+      "curves=master='0/0 0.12/0.15 0.5/0.55 0.88/0.92 1/1'",
+      'unsharp=5:5:0.3:3:3:0.1',
     ].join(',');
 
     return [
