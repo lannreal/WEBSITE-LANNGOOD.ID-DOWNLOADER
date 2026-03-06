@@ -352,81 +352,22 @@ function downloadTikTokToFile(downloadUrl, destPath) {
 // ══════════════════════════════════════════════════════════════════
 
 /**
- * REMUX ke MP4 bersih sebelum HDR conversion.
- *
- * ROOT CAUSE sebenarnya dari error "Decoder (codec none) not found for input stream #0:1":
- * TikTok/TikWM mengembalikan file MP4 dengan stream layout aneh:
- *   #0:0 → video (h264) ✅
- *   #0:1 → data/cover/unknown stream dengan codec=none ❌  ← INI yang crash
- *   #0:2 → audio (aac) ✅
- *
- * ffprobe -select_streams a hanya melihat stream audio murni (#0:2 = aac, valid=true),
- * sehingga probe kita bilang "ada audio" — TAPI saat ffmpeg memproses file,
- * ia menemukan stream #0:1 (codec none) dan crash sebelum sampai ke stream audio.
- *
- * Solusi: remux dulu dengan -map 0:V:0 (kapital V = video only, skip attached pics)
- * dan -map 0:a:0? serta -ignore_unknown untuk buang semua stream aneh.
- * Hasilnya adalah file MP4 bersih yang hanya punya 1 video + 1 audio stream.
- */
-function remuxToClean(inputPath, outputPath) {
-  return new Promise((resolve, reject) => {
-    const bin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
-    const args = [
-      '-y', '-i', inputPath,
-      '-map', '0:V:0',    // kapital V = video stream saja, SKIP attached pictures/cover
-      '-map', '0:a:0?',   // audio pertama, opsional
-      '-c:v', 'copy',
-      '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
-      '-ignore_unknown',   // buang stream yang tidak dikenali (data, subtitle, dll)
-      '-movflags', '+faststart',
-      outputPath,
-    ];
-
-    console.log('  [REMUX] Cleaning container sebelum HDR conversion...');
-    const proc = spawn(bin, args);
-    let stderr = '';
-    proc.stderr.on('data', d => { stderr += d.toString(); });
-    proc.on('error', reject);
-    proc.on('close', code => {
-      if (code !== 0) {
-        // Jika remux dengan audio gagal, coba tanpa audio
-        console.warn('  [REMUX] Gagal dengan audio, coba tanpa audio...');
-        const argsNoAudio = [
-          '-y', '-i', inputPath,
-          '-map', '0:V:0',
-          '-c:v', 'copy',
-          '-an',
-          '-ignore_unknown',
-          '-movflags', '+faststart',
-          outputPath,
-        ];
-        const proc2 = spawn(bin, argsNoAudio);
-        let stderr2 = '';
-        proc2.stderr.on('data', d => { stderr2 += d.toString(); });
-        proc2.on('error', reject);
-        proc2.on('close', code2 => {
-          if (code2 !== 0) return reject(new Error('Remux gagal: ' + stderr2.slice(0, 200)));
-          console.log('  [REMUX] ✅ Clean (tanpa audio)');
-          resolve(false); // false = tidak ada audio
-        });
-        return;
-      }
-      console.log('  [REMUX] ✅ Clean (dengan audio)');
-      resolve(true); // true = ada audio
-    });
-  });
-}
-
-/**
  * Build ffmpeg args for HDR conversion.
- * Dipanggil SETELAH remux — inputPath sudah dijamin bersih (hanya 1 video + max 1 audio).
- * Tidak perlu -map eksplisit lagi karena containernya sudah clean.
+ *
+ * ROOT CAUSE error "Decoder (codec none) not found for input stream #0:1":
+ * TikTok/TikWM mengembalikan MP4 dengan stream layout:
+ *   #0:0 → video h264 ✅
+ *   #0:1 → cover/data stream, codec=none ❌  ← crash di sini
+ *   #0:2 → audio aac ✅
+ *
+ * FIX DEFINITIF — 3 flag kunci langsung di command HDR:
+ *   -map 0:V:0        → kapital V = video saja, SKIP cover/attached pictures
+ *   -map 0:a:0?       → audio pertama, opsional (? = tidak error jika tidak ada)
+ *   -ignore_unknown   → buang SEMUA stream yang tidak dikenali (data, cover, dll)
+ *
+ * Tidak perlu remux terpisah. Tiga flag ini cukup menangani semua kasus.
  */
-function buildHdrFfmpegArgs(inputPath, outputPath, useZscale, hasAudio) {
-  const audioArgs = hasAudio
-    ? ['-c:a', 'aac', '-b:a', '192k', '-ar', '48000']
-    : ['-an'];
-
+function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
   if (useZscale) {
     // ── SDR → HDR10 (BT.2020 + PQ) ──────────────────────────────
     const vf = [
@@ -438,7 +379,11 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale, hasAudio) {
     ].join(',');
 
     return [
-      '-y', '-i', inputPath,
+      '-y',
+      '-ignore_unknown',           // ← FIX: abaikan stream codec=none / data stream
+      '-i', inputPath,
+      '-map', '0:V:0',             // ← FIX: kapital V, skip cover/attached pics
+      '-map', '0:a:0?',            // ← audio opsional
       '-vf', vf,
       '-c:v', 'libx265',
       '-crf', '20',
@@ -449,7 +394,7 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale, hasAudio) {
       ':max-cll=1000,400',
       '-tag:v', 'hvc1',
       '-movflags', '+faststart',
-      ...audioArgs,
+      '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
       outputPath,
     ];
   } else {
@@ -461,13 +406,17 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale, hasAudio) {
     ].join(',');
 
     return [
-      '-y', '-i', inputPath,
+      '-y',
+      '-ignore_unknown',           // ← FIX: abaikan stream codec=none / data stream
+      '-i', inputPath,
+      '-map', '0:V:0',             // ← FIX: kapital V, skip cover/attached pics
+      '-map', '0:a:0?',            // ← audio opsional
       '-vf', vf,
       '-c:v', 'libx264',
       '-crf', '18',
       '-preset', 'fast',
       '-movflags', '+faststart',
-      ...audioArgs,
+      '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
       outputPath,
     ];
   }
@@ -575,44 +524,21 @@ function downloadSourceVideo(videoUrl, quality, uid) {
 
 /**
  * Run ffmpeg HDR conversion.
- * PIPELINE BARU:
- *   1. remuxToClean()  → bersihkan container TikTok yang punya stream aneh
- *   2. buildHdrFfmpegArgs() → konversi HDR dari file yang sudah bersih
- *   3. Auto-retry ke HDR+ enhanced jika HDR10 (zscale) gagal
+ * Auto-retries with enhanced mode if HDR10 (zscale) fails.
  */
-async function runHdrConversion(srcPath, hdrPath, attempt) {
-  // Step 1: Remux hanya di attempt pertama
-  let cleanPath = srcPath;
-  let hasAudio = true;
-
-  if (attempt === 1) {
-    cleanPath = srcPath.replace('_src.mp4', '_clean.mp4');
-    try {
-      hasAudio = await remuxToClean(srcPath, cleanPath);
-    } catch (e) {
-      console.warn('  [REMUX] Gagal total, pakai file original:', e.message);
-      cleanPath = srcPath; // fallback ke file asli
-      hasAudio = false;
-    }
-  }
-
+function runHdrConversion(srcPath, hdrPath, attempt) {
   return new Promise((resolve, reject) => {
     const useZscale = attempt === 1 && ZSCALE_AVAILABLE;
     const hdrLabel = useZscale ? 'HDR10' : 'HDR+';
-    const args = buildHdrFfmpegArgs(cleanPath, hdrPath, useZscale, hasAudio);
+    const args = buildHdrFfmpegArgs(srcPath, hdrPath, useZscale);
 
-    console.log(`  [HDR-CONV] Converting to ${hdrLabel} (attempt ${attempt}, hasAudio=${hasAudio})...`);
+    console.log(`  [HDR-CONV] Converting to ${hdrLabel} (attempt ${attempt})...`);
     const bin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
     const proc = spawn(bin, args);
     let stderr = '';
     proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('error', reject);
     proc.on('close', code => {
-      // Cleanup file clean sementara
-      if (cleanPath !== srcPath) {
-        try { fs.unlinkSync(cleanPath); } catch { }
-      }
-
       if (code !== 0) {
         if (attempt === 1 && ZSCALE_AVAILABLE) {
           console.warn('  [HDR-CONV] HDR10 gagal, coba HDR+ enhanced mode...');
