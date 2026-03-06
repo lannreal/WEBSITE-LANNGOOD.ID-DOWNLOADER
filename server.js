@@ -241,6 +241,182 @@ function cleanupOld() {
 }
 setInterval(cleanupOld, 10 * 60 * 1000);
 
+// ══════════════════════════════════════════════════════════════════
+//  TIKWM API — khusus TikTok (bypass datacenter block)
+// ══════════════════════════════════════════════════════════════════
+
+async function tikwmGetInfo(videoUrl) {
+  return new Promise((resolve, reject) => {
+    const postData = `url=${encodeURIComponent(videoUrl)}&hd=1`;
+    const options = {
+      hostname: 'www.tikwm.com',
+      path: '/api/',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData),
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.tikwm.com/',
+      },
+    };
+    const req = https.request(options, res => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.code === 0 && json.data) resolve(json.data);
+          else reject(new Error(json.msg || 'TikWM API error'));
+        } catch { reject(new Error('TikWM parse error')); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('TikWM timeout')); });
+    req.write(postData);
+    req.end();
+  });
+}
+
+async function tikwmDownload(videoUrl, audioOnly) {
+  const data = await tikwmGetInfo(videoUrl);
+  // Pilih URL: no-watermark video atau audio
+  const dlUrl = audioOnly
+    ? (data.music_info?.play || data.hdplay || data.play)
+    : (data.hdplay || data.play);
+  if (!dlUrl) throw new Error('URL video tidak ditemukan dari TikWM');
+  return {
+    downloadUrl: dlUrl,
+    title: data.title || 'tiktok_video',
+    author: data.author?.nickname || '',
+    thumbnail: data.cover || '',
+    isAudio: audioOnly,
+  };
+}
+
+// Stream download dari URL eksternal ke client
+function streamFromUrl(externalUrl, filename, mimeType, res, redirectCount = 0) {
+  if (redirectCount > 10) return res.status(500).json({ error: 'Terlalu banyak redirect' });
+  const mod = externalUrl.startsWith('https') ? https : require('http');
+  mod.get(externalUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      'Referer': 'https://www.tiktok.com/',
+    }
+  }, proxyRes => {
+    if (proxyRes.statusCode === 301 || proxyRes.statusCode === 302 || proxyRes.statusCode === 307) {
+      return streamFromUrl(proxyRes.headers.location, filename, mimeType, res, redirectCount + 1);
+    }
+    if (proxyRes.statusCode !== 200) {
+      return res.status(500).json({ error: 'Gagal stream dari server TikTok: ' + proxyRes.statusCode });
+    }
+    const safeFilename = sanitize(filename) || 'tiktok_video';
+    const encodedName = encodeURIComponent(safeFilename);
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodedName}`);
+    if (proxyRes.headers['content-length']) {
+      res.setHeader('Content-Length', proxyRes.headers['content-length']);
+    }
+    proxyRes.pipe(res);
+    res.on('close', () => proxyRes.destroy());
+  }).on('error', err => {
+    if (!res.headersSent) res.status(500).json({ error: 'Stream error: ' + err.message });
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  TIKWM API — Khusus TikTok (bypass datacenter block)
+//  Free, tanpa key, bisa dari server manapun
+// ══════════════════════════════════════════════════════════════════
+
+function downloadTikTokViaTikwm(videoUrl, res) {
+  return new Promise((resolve, reject) => {
+    const postData = `url=${encodeURIComponent(videoUrl)}&hd=1`;
+
+    const options = {
+      hostname: 'www.tikwm.com',
+      path: '/api/',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData),
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.tikwm.com/',
+      },
+    };
+
+    const req = https.request(options, apiRes => {
+      let body = '';
+      apiRes.on('data', d => body += d);
+      apiRes.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          if (data.code !== 0 || !data.data) {
+            return reject(new Error(data.msg || 'TikWM API gagal'));
+          }
+          const info = data.data;
+          // Pilih URL: HD dulu, lalu play (no watermark), lalu wmplay (watermark)
+          const videoUrlResult = info.hdplay || info.play || info.wmplay;
+          if (!videoUrlResult) return reject(new Error('URL video tidak ditemukan'));
+
+          resolve({
+            downloadUrl: videoUrlResult,
+            title: info.title || 'tiktok_video',
+            author: info.author?.nickname || '',
+            thumbnail: info.cover || '',
+            duration: info.duration || 0,
+          });
+        } catch (e) {
+          reject(new Error('Parse TikWM response gagal: ' + e.message));
+        }
+      });
+    });
+
+    req.on('error', e => reject(new Error('TikWM request error: ' + e.message)));
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('TikWM timeout')); });
+    req.write(postData);
+    req.end();
+  });
+}
+
+// Proxy TikTok video URL ke client (stream langsung)
+function streamTikTokUrl(sourceUrl, filename, res) {
+  const urlObj = new URL(sourceUrl);
+  const mod = sourceUrl.startsWith('https') ? https : require('http');
+
+  const options = {
+    hostname: urlObj.hostname,
+    path: urlObj.pathname + urlObj.search,
+    method: 'GET',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Referer': 'https://www.tiktok.com/',
+    },
+  };
+
+  mod.get(options, streamRes => {
+    if (streamRes.statusCode === 301 || streamRes.statusCode === 302 || streamRes.statusCode === 307) {
+      return streamTikTokUrl(streamRes.headers.location, filename, res);
+    }
+    if (streamRes.statusCode !== 200) {
+      if (!res.headersSent) res.status(502).json({ error: 'Gagal stream video dari TikTok' });
+      return;
+    }
+
+    const safeName = sanitize(filename) + '.mp4';
+    const encodedName = encodeURIComponent(safeName);
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`);
+    if (streamRes.headers['content-length']) {
+      res.setHeader('Content-Length', streamRes.headers['content-length']);
+    }
+    streamRes.pipe(res);
+    streamRes.on('error', () => { if (!res.headersSent) res.status(500).end(); });
+  }).on('error', e => {
+    if (!res.headersSent) res.status(500).json({ error: 'Stream error: ' + e.message });
+  });
+}
+
 function requireYtDlp(req, res, next) {
   if (YTDLP_BIN) return next();
   res.status(503).json({
@@ -269,20 +445,31 @@ app.get('/api/status', (req, res) => res.json({
 }));
 
 // ── GET VIDEO INFO ────────────────────────────────────────────────
-app.post('/api/info', requireYtDlp, (req, res) => {
+app.post('/api/info', (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
   try { new URL(url); } catch { return res.status(400).json({ error: 'Format URL salah' }); }
 
   const safeUrl = url.replace(/["`]/g, '');
 
-  // TikTok bypass untuk info juga
-  const tiktokExtraInfo = safeUrl.includes('tiktok.com')
-    ? `--add-header "Referer:https://www.tiktok.com/" --add-header "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" --extractor-args "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com;app_version=35.1.3"`
-    : '';
+  // TikTok → pakai TikWM API (bypass datacenter block)
+  if (safeUrl.includes('tiktok.com')) {
+    return downloadTikTokViaTikwm(safeUrl)
+      .then(info => res.json({
+        title: info.title || 'TikTok Video',
+        uploader: info.author || '',
+        thumbnail: info.thumbnail || '',
+      }))
+      .catch(err => {
+        console.error('[TIKWM INFO ERR]', err.message);
+        res.json({ title: 'TikTok Video', uploader: '', thumbnail: '' });
+      });
+  }
 
-  const cmd = `"${YTDLP_BIN}" --no-warnings --dump-json --no-playlist ${tiktokExtraInfo} "${safeUrl}"`;
+  // Platform lain → yt-dlp
+  if (!YTDLP_BIN) return res.status(503).json({ error: 'yt-dlp tidak tersedia', ytdlp_missing: true });
 
+  const cmd = `"${YTDLP_BIN}" --no-warnings --dump-json --no-playlist "${safeUrl}"`;
   exec(cmd, { timeout: 35000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) {
       const msg = (stderr || err.message || '').toLowerCase();
@@ -304,10 +491,31 @@ app.post('/api/info', requireYtDlp, (req, res) => {
 });
 
 // ── DOWNLOAD VIDEO ────────────────────────────────────────────────
-app.post('/api/download', requireYtDlp, (req, res) => {
+app.post('/api/download', (req, res) => {
   const { url, format = 'mp4', quality = 'best' } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
   try { new URL(url); } catch { return res.status(400).json({ error: 'Format URL salah' }); }
+
+  const safeUrlCheck = url.replace(/["`]/g, '');
+
+  // TikTok → TikWM API (bypass datacenter IP block)
+  if (safeUrlCheck.includes('tiktok.com')) {
+    console.log('[TIKWM] Menggunakan TikWM API untuk TikTok...');
+    downloadTikTokViaTikwm(safeUrlCheck)
+      .then(info => {
+        const filename = sanitize(info.title || 'tiktok_video');
+        console.log('[TIKWM DL] Streaming:', info.downloadUrl.slice(0, 80));
+        streamTikTokUrl(info.downloadUrl, filename, res);
+      })
+      .catch(err => {
+        console.error('[TIKWM ERR]', err.message);
+        if (!res.headersSent) res.status(500).json({ error: 'TikTok download gagal: ' + err.message });
+      });
+    return;
+  }
+
+  // Cek yt-dlp untuk platform lain
+  if (!YTDLP_BIN) return res.status(503).json({ error: 'yt-dlp tidak tersedia', ytdlp_missing: true });
 
   cleanupOld();
 
