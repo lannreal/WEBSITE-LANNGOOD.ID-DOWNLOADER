@@ -356,27 +356,18 @@ function downloadTikTokToFile(downloadUrl, destPath) {
  *
  * Mode HDR10 (zscale tersedia):
  *   SDR → linear light → BT.2020 gamut → PQ/SMPTE ST 2084 transfer
- *   CATATAN: JANGAN pakai `tonemap` di sini — filter itu untuk arah HDR→SDR,
- *   bukan SDR→HDR. Pakai `tonemap` di pipeline ini justru memotong highlight
- *   dan membuat video jauh lebih gelap.
+ *   CATATAN: JANGAN pakai `tonemap` di sini — filter itu untuk arah HDR→SDR.
  *
  * Mode HDR+ Enhanced (tanpa zscale):
- *   gamma > 1.0 = lebih terang (gamma < 1.0 = lebih gelap — bug sebelumnya).
- *   Gunakan curves untuk angkat shadow + boost highlight secara proporsional.
+ *   Pendekatan SEIMBANG — warna hidup tapi TIDAK membakar mata.
+ *   Filosofi: angkat shadow tipis, jaga midtone natural,
+ *   rolloff highlight agar tidak silau, saturation natural.
  */
 function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
   if (useZscale) {
     // ── SDR → HDR10 (BT.2020 + PQ) ──────────────────────────────
     // ffmpeg 5.x requires zscale steps to be split — combining primaries,
-    // transfer, and matrix in a single zscale call causes "Unspecified error"
-    // on ffmpeg 5.1.x even though it works on 6.x.
-    //
-    // Correct order (each zscale only changes ONE property at a time):
-    //  1. SDR → linear light  (change transfer to linear, keep everything else)
-    //  2. format=gbrpf32le    (float32 planar for precision during gamut mapping)
-    //  3. change primaries to BT.2020 (keep linear transfer)
-    //  4. change transfer to PQ + matrix to bt2020nc + range=tv + npl=1000
-    //  5. format=yuv420p10le  (10-bit output)
+    // transfer, and matrix in a single zscale call causes "Unspecified error".
     const vf = [
       'zscale=t=linear:npl=100',
       'format=gbrpf32le',
@@ -402,20 +393,56 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
     ];
   } else {
     // ── HDR+ Enhanced (tanpa zscale) ─────────────────────────────
-    // gamma > 1.0 = terangkan midtone (BUKAN < 1.0 yang malah menggelapkan)
-    // curves: angkat shadow halus + jaga highlight tidak clipping
-    // unsharp ringan: tambah clarity tanpa artefak
+    //
+    // FILOSOFI: HDR+ bukan "lebih terang & lebih jenuh".
+    // Tujuan: dynamic range lebih lebar, shadow & highlight tetap terjaga,
+    // warna hidup tapi TIDAK membakar mata.
+    //
+    // Perbandingan vs versi lama yang menyilaukan:
+    //  ┌─────────────┬──────────────┬──────────────┬─────────────────────────┐
+    //  │ Parameter   │ Lama (silau) │ Baru (seimbang)│ Alasan                │
+    //  ├─────────────┼──────────────┼──────────────┼─────────────────────────┤
+    //  │ gamma       │ 1.2          │ 1.12         │ Lift midtone lebih halus │
+    //  │ contrast    │ 1.08         │ 1.04         │ Hindari crush shadow     │
+    //  │ brightness  │ 0.03         │ 0.01         │ Biarkan gamma yang angkat│
+    //  │ saturation  │ 1.25 (garish)│ 1.10         │ Vivid tapi natural       │
+    //  │ curves      │ master agresif│ per-channel  │ Kontrol R/G/B terpisah   │
+    //  │             │ 1→1 (clipping)│ rolloff 0.975│ Highlight tidak silau   │
+    //  │ unsharp     │ 5x5 str=0.3  │ 3x3 str=0.12 │ Clarity tanpa amplify   │
+    //  │             │ (harsh)      │              │ noise / grain            │
+    //  └─────────────┴──────────────┴──────────────┴─────────────────────────┘
+    //
+    // Kunci utama anti-silau = highlight rolloff (1/0.975):
+    //   1.0 → putih 100% → terlalu menyilaukan di layar mobile/OLED
+    //   0.975 → highlight sedikit turun → terasa "lembut" dan nyaman di mata
+    //
+    // Shadow lift tipis (0/0.015):
+    //   0/0 → shadow hitam crush → detail hilang, kontras berlebihan
+    //   0/0.015 → shadow sedikit terangkat → detail tetap ada, mata tidak lelah
+
     const vf = [
-      'eq=gamma=1.2:contrast=1.08:brightness=0.03:saturation=1.25',
-      "curves=master='0/0 0.12/0.15 0.5/0.55 0.88/0.92 1/1'",
-      'unsharp=5:5:0.3:3:3:0.1',
+      // Step 1 — Gentle gamma lift + minimal brightness + natural saturation
+      'eq=gamma=1.12:contrast=1.04:brightness=0.01:saturation=1.10',
+
+      // Step 2 — Balanced per-channel S-curve
+      //   0/0.015  = shadow lift tipis (detail area gelap tidak crush)
+      //   0.5/0.52 = midtone sedikit naik (naturalness preserved)
+      //   1/0.975  = highlight rolloff (ANTI-SILAU — cegah clipping)
+      //   Blue lebih rendah (0.515) agar tidak terlalu "cool/dingin"
+      "curves=r='0/0.015 0.5/0.52 1/0.975'" +
+        ":g='0/0.015 0.5/0.52 1/0.975'" +
+        ":b='0/0.015 0.5/0.515 1/0.975'",
+
+      // Step 3 — Light clarity: radius kecil, strength rendah
+      //   Cukup untuk ketajaman tepi, tidak amplify noise atau skin texture
+      'unsharp=3:3:0.12:3:3:0.04',
     ].join(',');
 
     return [
       '-y', '-i', inputPath,
       '-vf', vf,
       '-c:v', 'libx264',
-      '-crf', '18',
+      '-crf', '17',
       '-preset', 'fast',
       '-movflags', '+faststart',
       '-c:a', 'copy',
@@ -431,19 +458,15 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
  */
 function extractFfmpegError(stderr) {
   const lines = stderr.split('\n');
-  // Real error lines start with these patterns (ffmpeg convention)
   const errorLines = lines.filter(l => {
     const t = l.trim();
     if (!t) return false;
-    // Skip the version banner, config, build info, and stream mapping lines
     if (/^ffmpeg version/i.test(t)) return false;
     if (/^(built with|configuration:|lib|Input #|Output #|Stream mapping|Press ctrl)/i.test(t)) return false;
     if (/^\s*(Stream|Metadata|Duration|encoder|video:|audio:)/i.test(t)) return false;
-    // Keep actual error/warning lines
     return /error|invalid|not found|no such|failed|cannot|unable|unspecified|conversion/i.test(t);
   });
   if (errorLines.length) return errorLines.slice(-3).join(' | ').slice(0, 300);
-  // Fallback: last non-empty line that isn't the banner
   const meaningful = lines.filter(l => l.trim() && !/^ffmpeg version|^built with|^configuration/i.test(l.trim()));
   return meaningful.slice(-2).join(' | ').slice(0, 300) || 'Unknown ffmpeg error';
 }
@@ -517,7 +540,6 @@ function downloadSourceVideo(videoUrl, quality, uid) {
       const rawName = files[0].replace(`${uid}_src_`, '').replace(/\.[^.]+$/, '');
       const srcPath = path.join(TEMP_DIR, `${uid}_src.mp4`);
 
-      // Rename/copy to standard srcPath
       try {
         fs.renameSync(dlFile, srcPath);
       } catch {
@@ -539,10 +561,6 @@ function runHdrConversion(srcPath, hdrPath, attempt) {
     const hdrLabel = useZscale ? 'HDR10' : 'HDR+';
     const args = buildHdrFfmpegArgs(srcPath, hdrPath, useZscale);
 
-    if (FFMPEG_DIR && !useZscale) {
-      // nothing special
-    }
-
     console.log(`  [HDR-CONV] Converting to ${hdrLabel} (attempt ${attempt})...`);
     const bin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
     const proc = spawn(bin, args);
@@ -552,11 +570,9 @@ function runHdrConversion(srcPath, hdrPath, attempt) {
     proc.on('close', code => {
       if (code !== 0) {
         if (attempt === 1 && ZSCALE_AVAILABLE) {
-          // HDR10 failed — try enhanced fallback
           console.warn('  [HDR-CONV] HDR10 gagal, coba HDR+ enhanced mode...');
           return runHdrConversion(srcPath, hdrPath, 2).then(resolve).catch(reject);
         }
-        // Both failed — use extractFfmpegError to skip the banner noise
         const realErr = extractFfmpegError(stderr);
         console.error(`  [HDR-CONV] exit ${code} | ${realErr}`);
         return reject(new Error('Konversi HDR gagal: ' + realErr));
@@ -780,7 +796,6 @@ app.post('/api/hdr', async (req, res) => {
       [srcPath, hdrPath].forEach(f => {
         if (f) try { fs.unlinkSync(f); } catch { }
       });
-      // Clean any leftover yt-dlp pattern files
       try {
         fs.readdirSync(TEMP_DIR)
           .filter(f => f.startsWith(uid))
@@ -848,7 +863,6 @@ app.post('/api/hdr', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════
 
 // ── 1. FORMAT INSPECTOR ──────────────────────────────────────────
-// GET /api/formats?url=... → list all available formats
 app.post('/api/formats', (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
@@ -875,7 +889,6 @@ app.post('/api/formats', (req, res) => {
         }))
         .sort((a, b) => (b.height - a.height));
 
-      // Deduplicate by height
       const seen = new Set();
       const unique = fmts.filter(f => {
         const k = `${f.height}p`;
@@ -897,8 +910,6 @@ app.post('/api/formats', (req, res) => {
 });
 
 // ── 2. VIDEO TRIM ────────────────────────────────────────────────
-// POST /api/trim { url, start, end, format, quality }
-// start/end format: "HH:MM:SS" or seconds
 app.post('/api/trim', async (req, res) => {
   const { url, start = '0', end, format = 'mp4', quality = 'best' } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
@@ -911,7 +922,6 @@ app.post('/api/trim', async (req, res) => {
 
   try {
     const { srcPath: sp, title } = await downloadSourceVideo(url, quality, uid);
-    // Rename to srcPath
     try { fs.renameSync(sp, srcPath); } catch { fs.copyFileSync(sp, srcPath); }
 
     await new Promise((resolve, reject) => {
@@ -950,7 +960,6 @@ app.post('/api/trim', async (req, res) => {
 });
 
 // ── 3. GIF CONVERTER ─────────────────────────────────────────────
-// POST /api/gif { url, start, duration, width, fps }
 app.post('/api/gif', async (req, res) => {
   const { url, start = '0', duration = '5', width = '480', fps = '12', quality = 'best' } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
@@ -983,11 +992,9 @@ app.post('/api/gif', async (req, res) => {
     const d = Math.min(parseFloat(duration) || 5, 30);
     const vf = `fps=${f},scale=${w}:-1:flags=lanczos`;
 
-    // Step 1: generate palette
     await spawnFF(['-y', '-ss', String(start), '-t', String(d), '-i', srcPath,
       '-vf', `${vf},palettegen=max_colors=128`, palPath]);
 
-    // Step 2: render GIF with palette
     await spawnFF(['-y', '-ss', String(start), '-t', String(d), '-i', srcPath,
       '-i', palPath, '-lavfi', `${vf}[x];[x][1:v]paletteuse=dither=bayer`, gifPath]);
 
@@ -1010,13 +1017,11 @@ app.post('/api/gif', async (req, res) => {
 });
 
 // ── 4. VIDEO COMPRESS ────────────────────────────────────────────
-// POST /api/compress { url, preset: 'low'|'medium'|'high', quality }
 app.post('/api/compress', async (req, res) => {
   const { url, preset = 'medium', quality = 'best' } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
   if (!FFMPEG_AVAILABLE) return res.status(503).json({ error: 'ffmpeg tidak tersedia' });
 
-  // Preset: low=720p CRF32, medium=720p CRF26, high=1080p CRF22
   const presets = {
     low: { scale: 720, crf: 32, preset: 'fast' },
     medium: { scale: 720, crf: 26, preset: 'fast' },
@@ -1077,7 +1082,6 @@ app.post('/api/compress', async (req, res) => {
 });
 
 // ── 5. SUBTITLE DOWNLOAD ─────────────────────────────────────────
-// POST /api/subtitle { url, lang }
 app.post('/api/subtitle', (req, res) => {
   const { url, lang = 'id,en' } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
@@ -1124,7 +1128,6 @@ app.post('/api/subtitle', (req, res) => {
 });
 
 // ── 6. THUMBNAIL DOWNLOAD ────────────────────────────────────────
-// POST /api/thumbnail { url }
 app.post('/api/thumbnail', (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
@@ -1159,7 +1162,6 @@ app.post('/api/thumbnail', (req, res) => {
 });
 
 // ── 7. AUDIO NORMALIZE ───────────────────────────────────────────
-// POST /api/normalize { url, target: loudness in LUFS, format }
 app.post('/api/normalize', async (req, res) => {
   const { url, target = '-14', format = 'mp3', quality = 'best' } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
@@ -1215,7 +1217,6 @@ app.post('/api/normalize', async (req, res) => {
 });
 
 // ── 8. PLAYLIST INFO ─────────────────────────────────────────────
-// POST /api/playlist { url, limit }
 app.post('/api/playlist', (req, res) => {
   const { url, limit = 50 } = req.body;
   if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
@@ -1244,7 +1245,6 @@ app.post('/api/playlist', (req, res) => {
 });
 
 // ── 9. BATCH DOWNLOAD (queue info) ──────────────────────────────
-// POST /api/batch/info { urls[] } → returns info for each URL
 app.post('/api/batch/info', (req, res) => {
   const { urls } = req.body;
   if (!Array.isArray(urls) || !urls.length) return res.status(400).json({ error: 'urls[] wajib diisi' });
@@ -1292,7 +1292,7 @@ app.use((err, req, res, next) => {
 
   const found = detectYtDlp();
   detectFfmpeg();
-  detectZscale(); // Check for libzimg/zscale (HDR10 support)
+  detectZscale();
 
   if (!found) {
     console.log('  🔄 Mencoba auto-install yt-dlp...');
