@@ -367,16 +367,21 @@ function downloadTikTokToFile(downloadUrl, destPath) {
 function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
   if (useZscale) {
     // ── SDR → HDR10 (BT.2020 + PQ) ──────────────────────────────
-    // Pipeline:
-    //  1. Konversi ke ruang linear (npl=100 = peak brightness SDR sumber)
-    //  2. Pindah ke format float 32-bit agar presisi tidak hilang
-    //  3. Ubah primaries ke BT.2020, transfer ke smpte2084 (PQ), matrix bt2020nc
-    //     npl=1000 = target peak brightness HDR (1000 nit)
-    //  4. Output ke 10-bit YUV420
+    // ffmpeg 5.x requires zscale steps to be split — combining primaries,
+    // transfer, and matrix in a single zscale call causes "Unspecified error"
+    // on ffmpeg 5.1.x even though it works on 6.x.
+    //
+    // Correct order (each zscale only changes ONE property at a time):
+    //  1. SDR → linear light  (change transfer to linear, keep everything else)
+    //  2. format=gbrpf32le    (float32 planar for precision during gamut mapping)
+    //  3. change primaries to BT.2020 (keep linear transfer)
+    //  4. change transfer to PQ + matrix to bt2020nc + range=tv + npl=1000
+    //  5. format=yuv420p10le  (10-bit output)
     const vf = [
       'zscale=t=linear:npl=100',
       'format=gbrpf32le',
-      'zscale=p=bt2020:t=smpte2084:m=bt2020nc:r=tv:npl=1000',
+      'zscale=primaries=bt2020',
+      'zscale=t=smpte2084:m=bt2020nc:r=tv:npl=1000',
       'format=yuv420p10le',
     ].join(',');
 
@@ -417,6 +422,30 @@ function buildHdrFfmpegArgs(inputPath, outputPath, useZscale) {
       outputPath,
     ];
   }
+}
+
+/**
+ * Extract the actual ffmpeg error from stderr.
+ * ffmpeg always prints a version banner + config to stderr even on success,
+ * so we must ignore those lines and only surface the real error lines.
+ */
+function extractFfmpegError(stderr) {
+  const lines = stderr.split('\n');
+  // Real error lines start with these patterns (ffmpeg convention)
+  const errorLines = lines.filter(l => {
+    const t = l.trim();
+    if (!t) return false;
+    // Skip the version banner, config, build info, and stream mapping lines
+    if (/^ffmpeg version/i.test(t)) return false;
+    if (/^(built with|configuration:|lib|Input #|Output #|Stream mapping|Press ctrl)/i.test(t)) return false;
+    if (/^\s*(Stream|Metadata|Duration|encoder|video:|audio:)/i.test(t)) return false;
+    // Keep actual error/warning lines
+    return /error|invalid|not found|no such|failed|cannot|unable|unspecified|conversion/i.test(t);
+  });
+  if (errorLines.length) return errorLines.slice(-3).join(' | ').slice(0, 300);
+  // Fallback: last non-empty line that isn't the banner
+  const meaningful = lines.filter(l => l.trim() && !/^ffmpeg version|^built with|^configuration/i.test(l.trim()));
+  return meaningful.slice(-2).join(' | ').slice(0, 300) || 'Unknown ffmpeg error';
 }
 
 /**
@@ -527,9 +556,10 @@ function runHdrConversion(srcPath, hdrPath, attempt) {
           console.warn('  [HDR-CONV] HDR10 gagal, coba HDR+ enhanced mode...');
           return runHdrConversion(srcPath, hdrPath, 2).then(resolve).catch(reject);
         }
-        // Both failed
-        console.error('  [HDR-CONV] stderr:', stderr.slice(0, 400));
-        return reject(new Error('Konversi HDR gagal: ' + stderr.slice(0, 200)));
+        // Both failed — use extractFfmpegError to skip the banner noise
+        const realErr = extractFfmpegError(stderr);
+        console.error(`  [HDR-CONV] exit ${code} | ${realErr}`);
+        return reject(new Error('Konversi HDR gagal: ' + realErr));
       }
       resolve(useZscale ? 'HDR10' : 'HDR+');
     });
@@ -556,7 +586,12 @@ app.get('/api/status', (req, res) => res.json({
   version: YTDLP_VERSION,
   ffmpeg_ready: FFMPEG_AVAILABLE,
   hdr_ready: FFMPEG_AVAILABLE,
-  hdr_type: HDR_TYPE, // 'HDR10' | 'HDR+' | 'none'
+  hdr_type: HDR_TYPE,
+  features: {
+    trim: FFMPEG_AVAILABLE, gif: FFMPEG_AVAILABLE, compress: FFMPEG_AVAILABLE,
+    normalize: FFMPEG_AVAILABLE, subtitle: !!YTDLP_BIN, thumbnail: !!YTDLP_BIN,
+    formats: !!YTDLP_BIN, playlist: !!YTDLP_BIN, batch: !!YTDLP_BIN, hdr: FFMPEG_AVAILABLE,
+  },
 }));
 
 // ── GET VIDEO INFO ────────────────────────────────────────────────
@@ -804,6 +839,438 @@ app.post('/api/hdr', async (req, res) => {
     console.error('[HDR+ ERR]', err.message);
     if (!res.headersSent) {
       res.status(500).json({ error: err.message || 'HDR+ conversion gagal' });
+    }
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  FITUR BARU — 20 Features
+// ══════════════════════════════════════════════════════════════════
+
+// ── 1. FORMAT INSPECTOR ──────────────────────────────────────────
+// GET /api/formats?url=... → list all available formats
+app.post('/api/formats', (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
+  if (!YTDLP_BIN) return res.status(503).json({ error: 'yt-dlp tidak tersedia' });
+
+  const safeUrl = url.replace(/["`]/g, '');
+  const cmd = `"${YTDLP_BIN}" --no-warnings -j --no-playlist "${safeUrl}"`;
+
+  exec(cmd, { timeout: 30000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    if (err) return res.status(500).json({ error: (stderr || err.message).slice(0, 200) });
+    try {
+      const info = JSON.parse(stdout.trim().split('\n')[0]);
+      const fmts = (info.formats || [])
+        .filter(f => f.vcodec !== 'none' && f.height)
+        .map(f => ({
+          id: f.format_id,
+          ext: f.ext,
+          height: f.height,
+          fps: f.fps ? Math.round(f.fps) : null,
+          vcodec: (f.vcodec || '').split('.')[0],
+          acodec: (f.acodec || '').split('.')[0],
+          filesize: f.filesize || f.filesize_approx || null,
+          note: f.format_note || '',
+        }))
+        .sort((a, b) => (b.height - a.height));
+
+      // Deduplicate by height
+      const seen = new Set();
+      const unique = fmts.filter(f => {
+        const k = `${f.height}p`;
+        if (seen.has(k)) return false;
+        seen.add(k); return true;
+      });
+
+      res.json({
+        title: info.title || 'Video',
+        thumbnail: info.thumbnail || '',
+        duration: info.duration || 0,
+        uploader: info.uploader || info.channel || '',
+        formats: unique.slice(0, 12),
+      });
+    } catch {
+      res.status(500).json({ error: 'Gagal parse format video' });
+    }
+  });
+});
+
+// ── 2. VIDEO TRIM ────────────────────────────────────────────────
+// POST /api/trim { url, start, end, format, quality }
+// start/end format: "HH:MM:SS" or seconds
+app.post('/api/trim', async (req, res) => {
+  const { url, start = '0', end, format = 'mp4', quality = 'best' } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
+  if (!FFMPEG_AVAILABLE) return res.status(503).json({ error: 'ffmpeg tidak tersedia untuk trim' });
+
+  cleanupOld();
+  const uid = crypto.randomBytes(8).toString('hex');
+  const srcPath = path.join(TEMP_DIR, `${uid}_trim_src.mp4`);
+  const outPath = path.join(TEMP_DIR, `${uid}_trim_out.mp4`);
+
+  try {
+    const { srcPath: sp, title } = await downloadSourceVideo(url, quality, uid);
+    // Rename to srcPath
+    try { fs.renameSync(sp, srcPath); } catch { fs.copyFileSync(sp, srcPath); }
+
+    await new Promise((resolve, reject) => {
+      const args = ['-y', '-i', srcPath, '-ss', String(start)];
+      if (end) args.push('-to', String(end));
+      args.push('-c', 'copy', '-avoid_negative_ts', 'make_zero', outPath);
+
+      const ffBin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
+      const proc = spawn(ffBin, args);
+      let stderr = '';
+      proc.stderr.on('data', d => { stderr += d.toString(); });
+      proc.on('error', reject);
+      proc.on('close', code => {
+        if (code !== 0) return reject(new Error('Trim gagal: ' + stderr.slice(0, 200)));
+        resolve();
+      });
+    });
+
+    const safeName = (sanitize(title) || 'lanngood_trim') + `_trim.mp4`;
+    const encoded = encodeURIComponent(safeName);
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encoded}`);
+    res.setHeader('Content-Length', fs.statSync(outPath).size);
+    res.setHeader('X-Video-Title', sanitize(title));
+
+    const stream = fs.createReadStream(outPath);
+    stream.pipe(res);
+    const cleanup = () => { [srcPath, outPath].forEach(f => { try { fs.unlinkSync(f); } catch { } }); };
+    stream.on('end', () => setTimeout(cleanup, 3000));
+    res.on('close', cleanup);
+
+  } catch (err) {
+    [srcPath, outPath].forEach(f => { try { fs.unlinkSync(f); } catch { } });
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+// ── 3. GIF CONVERTER ─────────────────────────────────────────────
+// POST /api/gif { url, start, duration, width, fps }
+app.post('/api/gif', async (req, res) => {
+  const { url, start = '0', duration = '5', width = '480', fps = '12', quality = 'best' } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
+  if (!FFMPEG_AVAILABLE) return res.status(503).json({ error: 'ffmpeg tidak tersedia' });
+
+  cleanupOld();
+  const uid = crypto.randomBytes(8).toString('hex');
+  const srcPath = path.join(TEMP_DIR, `${uid}_gif_src.mp4`);
+  const palPath = path.join(TEMP_DIR, `${uid}_palette.png`);
+  const gifPath = path.join(TEMP_DIR, `${uid}_out.gif`);
+  const ffBin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
+
+  const spawnFF = (args) => new Promise((resolve, reject) => {
+    const proc = spawn(ffBin, args);
+    let stderr = '';
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', reject);
+    proc.on('close', code => {
+      if (code !== 0) return reject(new Error(stderr.slice(0, 200)));
+      resolve();
+    });
+  });
+
+  try {
+    const { srcPath: sp, title } = await downloadSourceVideo(url, quality, uid);
+    try { fs.renameSync(sp, srcPath); } catch { fs.copyFileSync(sp, srcPath); }
+
+    const w = Math.min(parseInt(width) || 480, 800);
+    const f = Math.min(parseInt(fps) || 12, 24);
+    const d = Math.min(parseFloat(duration) || 5, 30);
+    const vf = `fps=${f},scale=${w}:-1:flags=lanczos`;
+
+    // Step 1: generate palette
+    await spawnFF(['-y', '-ss', String(start), '-t', String(d), '-i', srcPath,
+      '-vf', `${vf},palettegen=max_colors=128`, palPath]);
+
+    // Step 2: render GIF with palette
+    await spawnFF(['-y', '-ss', String(start), '-t', String(d), '-i', srcPath,
+      '-i', palPath, '-lavfi', `${vf}[x];[x][1:v]paletteuse=dither=bayer`, gifPath]);
+
+    const safeName = (sanitize(title) || 'lanngood') + '.gif';
+    const encoded = encodeURIComponent(safeName);
+    res.setHeader('Content-Type', 'image/gif');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encoded}`);
+    res.setHeader('Content-Length', fs.statSync(gifPath).size);
+
+    const stream = fs.createReadStream(gifPath);
+    stream.pipe(res);
+    const cleanup = () => { [srcPath, palPath, gifPath].forEach(f => { try { fs.unlinkSync(f); } catch { } }); };
+    stream.on('end', () => setTimeout(cleanup, 3000));
+    res.on('close', cleanup);
+
+  } catch (err) {
+    [srcPath, palPath, gifPath].forEach(f => { try { fs.unlinkSync(f); } catch { } });
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'GIF conversion gagal' });
+  }
+});
+
+// ── 4. VIDEO COMPRESS ────────────────────────────────────────────
+// POST /api/compress { url, preset: 'low'|'medium'|'high', quality }
+app.post('/api/compress', async (req, res) => {
+  const { url, preset = 'medium', quality = 'best' } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
+  if (!FFMPEG_AVAILABLE) return res.status(503).json({ error: 'ffmpeg tidak tersedia' });
+
+  // Preset: low=720p CRF32, medium=720p CRF26, high=1080p CRF22
+  const presets = {
+    low: { scale: 720, crf: 32, preset: 'fast' },
+    medium: { scale: 720, crf: 26, preset: 'fast' },
+    high: { scale: 1080, crf: 22, preset: 'fast' },
+  };
+  const cfg = presets[preset] || presets.medium;
+
+  cleanupOld();
+  const uid = crypto.randomBytes(8).toString('hex');
+  const srcPath = path.join(TEMP_DIR, `${uid}_cmp_src.mp4`);
+  const outPath = path.join(TEMP_DIR, `${uid}_cmp_out.mp4`);
+
+  try {
+    const { srcPath: sp, title } = await downloadSourceVideo(url, quality, uid);
+    try { fs.renameSync(sp, srcPath); } catch { fs.copyFileSync(sp, srcPath); }
+
+    await new Promise((resolve, reject) => {
+      const ffBin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
+      const vf = `scale=-2:min(ih\\,${cfg.scale})`;
+      const args = [
+        '-y', '-i', srcPath,
+        '-vf', vf,
+        '-c:v', 'libx264', '-crf', String(cfg.crf), '-preset', cfg.preset,
+        '-c:a', 'aac', '-b:a', '128k',
+        '-movflags', '+faststart', outPath,
+      ];
+      const proc = spawn(ffBin, args);
+      let stderr = '';
+      proc.stderr.on('data', d => { stderr += d.toString(); });
+      proc.on('error', reject);
+      proc.on('close', code => {
+        if (code !== 0) return reject(new Error('Compress gagal: ' + stderr.slice(0, 200)));
+        resolve();
+      });
+    });
+
+    const origSize = fs.statSync(srcPath).size;
+    const newSize = fs.statSync(outPath).size;
+    const safeName = (sanitize(title) || 'lanngood') + `_${preset}.mp4`;
+    const encoded = encodeURIComponent(safeName);
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encoded}`);
+    res.setHeader('Content-Length', newSize);
+    res.setHeader('X-Original-Size', origSize);
+    res.setHeader('X-Compressed-Size', newSize);
+    res.setHeader('X-Compression-Ratio', (newSize / origSize * 100).toFixed(1));
+
+    const stream = fs.createReadStream(outPath);
+    stream.pipe(res);
+    const cleanup = () => { [srcPath, outPath].forEach(f => { try { fs.unlinkSync(f); } catch { } }); };
+    stream.on('end', () => setTimeout(cleanup, 3000));
+    res.on('close', cleanup);
+
+  } catch (err) {
+    [srcPath, outPath].forEach(f => { try { fs.unlinkSync(f); } catch { } });
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+// ── 5. SUBTITLE DOWNLOAD ─────────────────────────────────────────
+// POST /api/subtitle { url, lang }
+app.post('/api/subtitle', (req, res) => {
+  const { url, lang = 'id,en' } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
+  if (!YTDLP_BIN) return res.status(503).json({ error: 'yt-dlp tidak tersedia' });
+
+  cleanupOld();
+  const uid = crypto.randomBytes(8).toString('hex');
+  const safeUrl = url.replace(/["`]/g, '');
+  const outTpl = path.join(TEMP_DIR, `${uid}_sub_%(title).50s`);
+
+  const args = [
+    '--no-warnings', '--no-playlist', '--skip-download',
+    '--write-subs', '--write-auto-subs',
+    '--sub-langs', lang,
+    '--sub-format', 'srt/best',
+    '--convert-subs', 'srt',
+    '-o', outTpl, safeUrl,
+  ];
+
+  let spawnCmd = YTDLP_BIN;
+  let spawnArgs = args;
+  if (YTDLP_BIN.startsWith('python3')) { spawnCmd = 'python3'; spawnArgs = ['-m', 'yt_dlp', ...args]; }
+
+  const proc = spawn(spawnCmd, spawnArgs);
+  let stderr = '';
+  proc.stderr.on('data', d => { stderr += d.toString(); });
+  proc.on('close', code => {
+    const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(`${uid}_sub`) && f.endsWith('.srt'));
+    if (!files.length) {
+      return res.status(404).json({ error: 'Subtitle tidak tersedia untuk video ini' });
+    }
+    const filePath = path.join(TEMP_DIR, files[0]);
+    const rawName = files[0].replace(`${uid}_sub_`, '');
+    const safeName = sanitize(rawName.replace(/\.[^.]+$/, '')) + '.srt';
+    const encoded = encodeURIComponent(safeName);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encoded}`);
+    res.setHeader('Content-Length', fs.statSync(filePath).size);
+    const stream = fs.createReadStream(filePath);
+    stream.pipe(res);
+    stream.on('end', () => setTimeout(() => { try { fs.unlinkSync(filePath); } catch { } }, 3000));
+  });
+  proc.on('error', err => { if (!res.headersSent) res.status(500).json({ error: err.message }); });
+});
+
+// ── 6. THUMBNAIL DOWNLOAD ────────────────────────────────────────
+// POST /api/thumbnail { url }
+app.post('/api/thumbnail', (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
+  if (!YTDLP_BIN) return res.status(503).json({ error: 'yt-dlp tidak tersedia' });
+
+  const safeUrl = url.replace(/["`]/g, '');
+  const cmd = `"${YTDLP_BIN}" --no-warnings -j --no-playlist "${safeUrl}"`;
+
+  exec(cmd, { timeout: 25000, maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
+    if (err) return res.status(500).json({ error: 'Gagal ambil info video' });
+    try {
+      const info = JSON.parse(stdout.trim().split('\n')[0]);
+      const thumbUrl = info.thumbnail || (info.thumbnails || []).slice(-1)[0]?.url;
+      if (!thumbUrl) return res.status(404).json({ error: 'Thumbnail tidak ditemukan' });
+
+      const title = sanitize(info.title || 'thumbnail');
+      const ext = thumbUrl.split('?')[0].split('.').pop() || 'jpg';
+      const filename = `${title}.${ext}`;
+      const encoded = encodeURIComponent(filename);
+
+      const mod = thumbUrl.startsWith('https') ? https : require('http');
+      mod.get(thumbUrl, imgRes => {
+        if (imgRes.statusCode !== 200) return res.status(502).json({ error: 'Gagal fetch thumbnail' });
+        res.setHeader('Content-Type', imgRes.headers['content-type'] || 'image/jpeg');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`);
+        if (imgRes.headers['content-length']) res.setHeader('Content-Length', imgRes.headers['content-length']);
+        imgRes.pipe(res);
+      }).on('error', () => res.status(500).json({ error: 'Gagal stream thumbnail' }));
+
+    } catch { res.status(500).json({ error: 'Parse error' }); }
+  });
+});
+
+// ── 7. AUDIO NORMALIZE ───────────────────────────────────────────
+// POST /api/normalize { url, target: loudness in LUFS, format }
+app.post('/api/normalize', async (req, res) => {
+  const { url, target = '-14', format = 'mp3', quality = 'best' } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
+  if (!FFMPEG_AVAILABLE) return res.status(503).json({ error: 'ffmpeg tidak tersedia' });
+
+  cleanupOld();
+  const uid = crypto.randomBytes(8).toString('hex');
+  const srcPath = path.join(TEMP_DIR, `${uid}_norm_src.mp4`);
+  const outExt = format === 'mp3' ? 'mp3' : 'mp4';
+  const outPath = path.join(TEMP_DIR, `${uid}_norm_out.${outExt}`);
+
+  try {
+    const { srcPath: sp, title } = await downloadSourceVideo(url, quality, uid);
+    try { fs.renameSync(sp, srcPath); } catch { fs.copyFileSync(sp, srcPath); }
+
+    const lufs = Math.max(-24, Math.min(-6, parseInt(target) || -14));
+
+    await new Promise((resolve, reject) => {
+      const ffBin = FFMPEG_PATH === 'ffmpeg' ? 'ffmpeg' : FFMPEG_PATH;
+      const audioFilter = `loudnorm=I=${lufs}:TP=-1.5:LRA=11`;
+      const args = format === 'mp3'
+        ? ['-y', '-i', srcPath, '-vn', '-af', audioFilter, '-c:a', 'libmp3lame', '-b:a', '192k', outPath]
+        : ['-y', '-i', srcPath, '-af', audioFilter, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', outPath];
+
+      const proc = spawn(ffBin, args);
+      let stderr = '';
+      proc.stderr.on('data', d => { stderr += d.toString(); });
+      proc.on('error', reject);
+      proc.on('close', code => {
+        if (code !== 0) return reject(new Error('Normalize gagal: ' + stderr.slice(0, 200)));
+        resolve();
+      });
+    });
+
+    const safeName = (sanitize(title) || 'lanngood_normalized') + `.${outExt}`;
+    const encoded = encodeURIComponent(safeName);
+    const MIME = { mp3: 'audio/mpeg', mp4: 'video/mp4' };
+    res.setHeader('Content-Type', MIME[outExt] || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encoded}`);
+    res.setHeader('Content-Length', fs.statSync(outPath).size);
+    res.setHeader('X-Normalize-Target', lufs + ' LUFS');
+
+    const stream = fs.createReadStream(outPath);
+    stream.pipe(res);
+    const cleanup = () => { [srcPath, outPath].forEach(f => { try { fs.unlinkSync(f); } catch { } }); };
+    stream.on('end', () => setTimeout(cleanup, 3000));
+    res.on('close', cleanup);
+
+  } catch (err) {
+    [srcPath, outPath].forEach(f => { try { fs.unlinkSync(f); } catch { } });
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+// ── 8. PLAYLIST INFO ─────────────────────────────────────────────
+// POST /api/playlist { url, limit }
+app.post('/api/playlist', (req, res) => {
+  const { url, limit = 50 } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL wajib diisi' });
+  if (!YTDLP_BIN) return res.status(503).json({ error: 'yt-dlp tidak tersedia' });
+
+  const safeUrl = url.replace(/["`]/g, '');
+  const lim = Math.min(parseInt(limit) || 50, 100);
+  const cmd = `"${YTDLP_BIN}" --no-warnings --flat-playlist --dump-json --playlist-end ${lim} "${safeUrl}"`;
+
+  exec(cmd, { timeout: 30000, maxBuffer: 20 * 1024 * 1024 }, (err, stdout, stderr) => {
+    if (err && !stdout) {
+      return res.status(500).json({ error: (stderr || err.message).slice(0, 200) });
+    }
+    try {
+      const lines = stdout.trim().split('\n').filter(Boolean);
+      const items = lines.map(l => {
+        try {
+          const j = JSON.parse(l);
+          return { id: j.id, title: j.title || j.id, url: j.url || j.webpage_url, duration: j.duration, thumbnail: j.thumbnail };
+        } catch { return null; }
+      }).filter(Boolean);
+
+      res.json({ count: items.length, items });
+    } catch { res.status(500).json({ error: 'Parse playlist gagal' }); }
+  });
+});
+
+// ── 9. BATCH DOWNLOAD (queue info) ──────────────────────────────
+// POST /api/batch/info { urls[] } → returns info for each URL
+app.post('/api/batch/info', (req, res) => {
+  const { urls } = req.body;
+  if (!Array.isArray(urls) || !urls.length) return res.status(400).json({ error: 'urls[] wajib diisi' });
+  if (!YTDLP_BIN) return res.status(503).json({ error: 'yt-dlp tidak tersedia' });
+
+  const limit = Math.min(urls.length, 10);
+  const results = [];
+  let pending = limit;
+
+  for (let i = 0; i < limit; i++) {
+    const safeUrl = urls[i].replace(/["`]/g, '');
+    if (safeUrl.includes('tiktok.com')) {
+      downloadTikTokViaTikwm(safeUrl)
+        .then(info => results.push({ url: safeUrl, title: info.title, thumbnail: info.thumbnail, ok: true }))
+        .catch(() => results.push({ url: safeUrl, title: safeUrl, ok: false }))
+        .finally(() => { if (--pending === 0) res.json({ results }); });
+    } else {
+      const cmd = `"${YTDLP_BIN}" --no-warnings -j --no-playlist "${safeUrl}"`;
+      exec(cmd, { timeout: 20000, maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
+        try {
+          if (err) throw err;
+          const info = JSON.parse(stdout.trim().split('\n')[0]);
+          results.push({ url: safeUrl, title: info.title || 'Video', thumbnail: info.thumbnail || '', ok: true });
+        } catch { results.push({ url: safeUrl, title: safeUrl, ok: false }); }
+        if (--pending === 0) res.json({ results });
+      });
     }
   }
 });
